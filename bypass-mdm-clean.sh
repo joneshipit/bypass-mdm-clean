@@ -142,30 +142,54 @@ select opt in "${options[@]}"; do
 		success "MDM domains blocked in hosts file"
 		echo ""
 
-		# ── Step 2: Manipulate MDM configuration profiles ──
-		info "Configuring MDM bypass settings..."
+		# ── Step 2: Nuke ALL MDM configuration data ──
+		# Remove everything first, then create only the bypass markers.
+		# This is critical: the cached activation record (.cloudConfigActivationRecord)
+		# is separate from the flag (.cloudConfigHasActivationRecord). If the cached
+		# record exists, Setup Assistant will show the MDM pane even with the flags removed.
+
+		info "Removing all MDM configuration data..."
 
 		config_path="$system_path/var/db/ConfigurationProfiles/Settings"
+		profiles_path="$system_path/var/db/ConfigurationProfiles"
 
 		if [ ! -d "$config_path" ]; then
 			mkdir -p "$config_path" 2>/dev/null && success "Created configuration directory" || warn "Could not create configuration directory"
 		fi
 
-		# Remove activation records that trigger MDM enrollment
-		rm -rf "$config_path/.cloudConfigHasActivationRecord" 2>/dev/null && success "Removed activation record" || info "No activation record to remove"
-		rm -rf "$config_path/.cloudConfigRecordFound" 2>/dev/null && success "Removed cloud config record" || info "No cloud config record to remove"
+		# Remove ALL cloudConfig files — cached records, flags, everything
+		cloudconfig_count=$(ls -1 "$config_path"/.cloudConfig* 2>/dev/null | wc -l)
+		rm -rf "$config_path"/.cloudConfig* 2>/dev/null
+		if [ "$cloudconfig_count" -gt 0 ]; then
+			success "Removed $cloudconfig_count cloudConfig files (including cached activation records)"
+		else
+			info "No cloudConfig files found"
+		fi
 
-		# Create markers that tell macOS MDM is already handled
+		# Remove any enrolled configuration profiles
+		rm -rf "$profiles_path"/*.enrollment* 2>/dev/null && success "Removed enrollment profiles" || info "No enrollment profiles found"
+
+		# Remove Setup Assistant MDM state from data volume
+		sa_state="$data_path/private/var/db/ConfigurationProfiles"
+		if [ -d "$sa_state" ]; then
+			rm -rf "$sa_state/Settings"/.cloudConfig* 2>/dev/null && success "Removed data volume cloudConfig cache" || info "No data volume cloudConfig cache"
+			rm -rf "$sa_state"/*.enrollment* 2>/dev/null
+		fi
+
+		echo ""
+
+		# ── Step 3: Create bypass markers ──
+		info "Creating MDM bypass markers..."
+
 		touch "$config_path/.cloudConfigProfileInstalled" 2>/dev/null && success "Created profile installed marker" || warn "Could not create profile marker"
 		touch "$config_path/.cloudConfigRecordNotFound" 2>/dev/null && success "Created record not found marker" || warn "Could not create not found marker"
 
 		echo ""
 
-		# ── Step 3: Ensure .AppleSetupDone does NOT exist ──
-		# This is the key difference: by NOT creating .AppleSetupDone and NOT
-		# creating a user, macOS will boot into the normal Setup Assistant.
-		# The Setup Assistant will let you create your own account, set up
-		# Apple ID, etc. — but without the MDM enrollment step.
+		# ── Step 4: Ensure .AppleSetupDone does NOT exist ──
+		# By NOT creating .AppleSetupDone and NOT creating a user, macOS will
+		# boot into the normal Setup Assistant. With the MDM data nuked and
+		# servers blocked, the enrollment step will be skipped.
 
 		info "Ensuring Setup Assistant will run on next boot..."
 
@@ -189,8 +213,14 @@ select opt in "${options[@]}"; do
 		echo -e "  4. Create your account like a brand new Mac"
 		echo -e "  5. The MDM enrollment step will be skipped"
 		echo ""
-		echo -e "${YEL}Note: If Setup Assistant still shows MDM enrollment,${NC}"
-		echo -e "${YEL}reboot into Recovery and run this script again.${NC}"
+		echo -e "${YEL}IMPORTANT: This works best on a fresh macOS install.${NC}"
+		echo -e "${YEL}If Setup Assistant still shows MDM enrollment:${NC}"
+		echo -e "${YEL}  1. Boot into Recovery Mode${NC}"
+		echo -e "${YEL}  2. Erase the drive (Disk Utility)${NC}"
+		echo -e "${YEL}  3. Reinstall macOS${NC}"
+		echo -e "${YEL}  4. Boot into Recovery BEFORE first setup${NC}"
+		echo -e "${YEL}  5. Run this script again${NC}"
+		echo -e "${YEL}  6. Then reboot into Setup Assistant${NC}"
 		echo ""
 		break
 		;;
