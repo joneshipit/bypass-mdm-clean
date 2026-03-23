@@ -51,7 +51,7 @@ From the menu bar: **Utilities → Terminal**
 ### 5. Run the Script
 
 ```bash
-curl -L https://raw.githubusercontent.com/jonesdev/bypass-mdm-clean/main/bypass-mdm-clean.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
+curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/bypass-mdm-clean.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
 ```
 
 ### 6. Select Option 1
@@ -90,4 +90,4 @@ Make sure you're running the script from the Recovery Mode terminal, which has r
 ## Credits
 
 - Original concept: [Assaf Dori](https://github.com/assafdori/bypass-mdm)
-- Clean setup adaptation: jonesdev
+- Clean setup adaptation: [joneshipit](https://github.com/joneshipit)
