@@ -155,6 +155,51 @@ do_mdm_bypass() {
 	touch "$sys_config_path/.cloudConfigRecordNotFound" 2>/dev/null
 	success "Created bypass markers on system volume"
 	echo ""
+
+	# ── Install hosts guard daemon ──
+	# SSV may revert /etc/hosts changes on boot, so install a LaunchDaemon
+	# on the data volume that reapplies MDM domain blocks every boot.
+	info "Installing MDM hosts guard for boot persistence..."
+
+	local bin_dir="$data_path/usr/local/bin"
+	mkdir -p "$bin_dir" 2>/dev/null
+
+	cat > "$bin_dir/mdm-hosts-guard.sh" << 'HOSTSGUARD'
+#!/bin/bash
+# Re-applies MDM domain blocks to /etc/hosts on boot
+# Handles SSV reverting changes
+domains="deviceenrollment.apple.com mdmenrollment.apple.com iprofiles.apple.com acmdm.apple.com axm-adm-mdm.apple.com gdmf.apple.com"
+for domain in $domains; do
+    grep -q "$domain" /etc/hosts 2>/dev/null || echo "0.0.0.0 $domain" >> /etc/hosts
+done
+HOSTSGUARD
+	chmod +x "$bin_dir/mdm-hosts-guard.sh"
+
+	local daemon_dir="$data_path/Library/LaunchDaemons"
+	mkdir -p "$daemon_dir" 2>/dev/null
+
+	cat > "$daemon_dir/com.joneshipit.mdm-hosts-guard.plist" << 'HOSTSDAEMON'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.joneshipit.mdm-hosts-guard</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/usr/local/bin/mdm-hosts-guard.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>
+HOSTSDAEMON
+
+	chown root:wheel "$daemon_dir/com.joneshipit.mdm-hosts-guard.plist" 2>/dev/null
+	chmod 644 "$daemon_dir/com.joneshipit.mdm-hosts-guard.plist" 2>/dev/null
+	success "MDM hosts guard will reapply domain blocks on every boot"
+	echo ""
 }
 
 # ─────────────────────────────────────────────
@@ -165,6 +210,8 @@ cleanup_users() {
 
 	dscl_path="$data_path/private/var/db/dslocal/nodes/Default/users"
 	if [ -d "$dscl_path" ]; then
+		# Collect non-system user accounts
+		local users_to_delete=()
 		for user_plist in "$dscl_path"/*.plist; do
 			if [ -f "$user_plist" ]; then
 				username=$(basename "$user_plist" .plist)
@@ -173,13 +220,34 @@ cleanup_users() {
 					continue
 					;;
 				*)
-					info "Removing leftover user account: $username"
-					rm -f "$user_plist" 2>/dev/null && success "Removed $username" || warn "Could not remove $username"
-					rm -rf "$data_path/Users/$username" 2>/dev/null
+					users_to_delete+=("$username")
 					;;
 				esac
 			fi
 		done
+
+		# If there are user accounts to delete, list them and ask for confirmation
+		if [ ${#users_to_delete[@]} -gt 0 ]; then
+			echo ""
+			warn "The following user accounts will be deleted:"
+			for username in "${users_to_delete[@]}"; do
+				echo -e "  ${RED}• $username${NC} (plist + /Users/$username home folder)"
+			done
+			echo ""
+			echo -e "${YEL}Only proceed if this is a fresh install or you're sure these aren't needed.${NC}"
+			read -p "Delete these user accounts? (y/n): " confirm_delete
+
+			if [ "$confirm_delete" != "y" ] && [ "$confirm_delete" != "Y" ]; then
+				info "Skipped user account cleanup"
+				return
+			fi
+
+			for username in "${users_to_delete[@]}"; do
+				info "Removing leftover user account: $username"
+				rm -f "$dscl_path/$username.plist" 2>/dev/null && success "Removed $username" || warn "Could not remove $username"
+				rm -rf "$data_path/Users/$username" 2>/dev/null
+			done
+		fi
 	fi
 }
 
@@ -217,12 +285,11 @@ BLOCKERSCRIPT
 	chmod +x "$bin_dir/block-erase.sh"
 	success "Created erase blocker script"
 
-	# Create the LaunchDaemons on the data volume
+	# Create the LaunchDaemon on the data volume
 	local daemon_dir="$data_path/Library/LaunchDaemons"
 	mkdir -p "$daemon_dir" 2>/dev/null
 
-	# Event-driven daemon (WatchPaths)
-	cat > "$daemon_dir/com.joneshipit.block-erase.plist" << 'WATCHDAEMON'
+	cat > "$daemon_dir/com.joneshipit.block-erase.plist" << 'ERASEDAEMON'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -234,38 +301,15 @@ BLOCKERSCRIPT
 		<string>/bin/bash</string>
 		<string>/usr/local/bin/block-erase.sh</string>
 	</array>
-	<key>WatchPaths</key>
-	<array>
-		<string>/System/Library/CoreServices/Erase Assistant.app</string>
-	</array>
-</dict>
-</plist>
-WATCHDAEMON
-
-	# Fallback daemon (5s interval)
-	cat > "$daemon_dir/com.joneshipit.block-erase-fallback.plist" << 'FALLDAEMON'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>com.joneshipit.block-erase-fallback</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/bin/bash</string>
-		<string>/usr/local/bin/block-erase.sh</string>
-	</array>
 	<key>StartInterval</key>
-	<integer>5</integer>
+	<integer>2</integer>
 </dict>
 </plist>
-FALLDAEMON
+ERASEDAEMON
 
 	# Set permissions
 	chown root:wheel "$daemon_dir/com.joneshipit.block-erase.plist" 2>/dev/null
 	chmod 644 "$daemon_dir/com.joneshipit.block-erase.plist" 2>/dev/null
-	chown root:wheel "$daemon_dir/com.joneshipit.block-erase-fallback.plist" 2>/dev/null
-	chmod 644 "$daemon_dir/com.joneshipit.block-erase-fallback.plist" 2>/dev/null
 
 	success "Reset protection will activate automatically on first boot"
 	echo -e "  ${BLU}To undo later: github.com/joneshipit/prevent-reset (unlock script)${NC}"
