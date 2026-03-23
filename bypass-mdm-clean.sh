@@ -2,8 +2,9 @@
 
 # Bypass MDM - Clean Setup Version
 # Blocks MDM enrollment and lets you create your own account without a temp user.
-# Uses .AppleSetupDone trick: marks setup "done" but with no users, macOS runs
-# a reduced Setup Assistant for account creation — skipping the MDM pane entirely.
+# Two modes:
+#   Option 1: Full Setup Assistant — erase/reinstall first, get the full macOS setup experience
+#   Option 2: Quick Bypass — no erase needed, skips Setup Assistant, prompts for account creation
 #
 # Based on bypass-mdm by Assaf Dori (https://github.com/assafdori/bypass-mdm)
 
@@ -39,7 +40,6 @@ detect_volumes() {
 
 	info "Detecting system volumes..." >&2
 
-	# Look for system volume (has /System directory, not a Data volume)
 	for vol in /Volumes/*; do
 		if [ -d "$vol" ]; then
 			vol_name=$(basename "$vol")
@@ -51,7 +51,6 @@ detect_volumes() {
 		fi
 	done
 
-	# Fallback: any volume with /System directory
 	if [ -z "$system_vol" ]; then
 		for vol in /Volumes/*; do
 			if [ -d "$vol/System" ]; then
@@ -62,7 +61,6 @@ detect_volumes() {
 		done
 	fi
 
-	# Find data volume
 	if [ -d "/Volumes/Data" ]; then
 		data_vol="Data"
 		info "Found data volume: $data_vol" >&2
@@ -79,18 +77,115 @@ detect_volumes() {
 		done
 	fi
 
-	if [ -z "$system_vol" ]; then
-		error_exit "Could not detect system volume. Ensure you're in Recovery Mode with macOS installed."
-	fi
-
-	if [ -z "$data_vol" ]; then
-		error_exit "Could not detect data volume. Ensure you're in Recovery Mode with macOS installed."
-	fi
+	[ -z "$system_vol" ] && error_exit "Could not detect system volume. Ensure you're in Recovery Mode with macOS installed."
+	[ -z "$data_vol" ] && error_exit "Could not detect data volume. Ensure you're in Recovery Mode with macOS installed."
 
 	echo "$system_vol|$data_vol"
 }
 
+# ─────────────────────────────────────────────
+# Shared function: block MDM domains & nuke data
+# ─────────────────────────────────────────────
+do_mdm_bypass() {
+	local system_path="$1"
+	local data_path="$2"
+
+	# ── Block MDM enrollment domains ──
+	info "Blocking MDM enrollment domains..."
+
+	hosts_file="$system_path/etc/hosts"
+	if [ -f "$hosts_file" ]; then
+		mdm_domains=(
+			"deviceenrollment.apple.com"
+			"mdmenrollment.apple.com"
+			"iprofiles.apple.com"
+			"acmdm.apple.com"
+			"axm-adm-mdm.apple.com"
+			"gdmf.apple.com"
+		)
+
+		for domain in "${mdm_domains[@]}"; do
+			grep -q "$domain" "$hosts_file" 2>/dev/null || echo "0.0.0.0 $domain" >>"$hosts_file"
+		done
+		success "Blocked ${#mdm_domains[@]} MDM domains in hosts file"
+	else
+		warn "Hosts file not found (SSV may prevent modification)"
+	fi
+	echo ""
+
+	# ── Nuke ALL MDM configuration data ──
+	info "Destroying all MDM configuration data..."
+
+	# Data volume (writable, not SSV-protected — this is what matters)
+	data_profiles="$data_path/private/var/db/ConfigurationProfiles"
+	if [ -d "$data_profiles" ]; then
+		rm -rf "$data_profiles/Settings"/.cloudConfig* 2>/dev/null
+		rm -rf "$data_profiles/Settings"/* 2>/dev/null
+		rm -rf "$data_profiles/Store"/* 2>/dev/null
+		rm -rf "$data_profiles"/*.enrollment* 2>/dev/null
+		success "Cleared all ConfigurationProfiles data (data volume)"
+	else
+		mkdir -p "$data_profiles/Settings" 2>/dev/null
+		info "No existing ConfigurationProfiles on data volume"
+	fi
+
+	# System volume (may be SSV-protected but try anyway)
+	sys_config_path="$system_path/var/db/ConfigurationProfiles/Settings"
+	sys_profiles_path="$system_path/var/db/ConfigurationProfiles"
+
+	if [ -d "$sys_profiles_path" ]; then
+		rm -rf "$sys_config_path"/.cloudConfig* 2>/dev/null
+		rm -rf "$sys_config_path"/* 2>/dev/null
+		rm -rf "$sys_profiles_path/Store"/* 2>/dev/null
+		rm -rf "$sys_profiles_path"/*.enrollment* 2>/dev/null
+		success "Cleared all ConfigurationProfiles data (system volume)"
+	fi
+	echo ""
+
+	# ── Create bypass markers on BOTH volumes ──
+	info "Creating MDM bypass markers..."
+
+	mkdir -p "$data_profiles/Settings" 2>/dev/null
+	touch "$data_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
+	touch "$data_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
+	success "Created bypass markers on data volume"
+
+	mkdir -p "$sys_config_path" 2>/dev/null
+	touch "$sys_config_path/.cloudConfigProfileInstalled" 2>/dev/null
+	touch "$sys_config_path/.cloudConfigRecordNotFound" 2>/dev/null
+	success "Created bypass markers on system volume"
+	echo ""
+}
+
+# ─────────────────────────────────────────────
+# Shared function: clean up leftover user accounts
+# ─────────────────────────────────────────────
+cleanup_users() {
+	local data_path="$1"
+
+	dscl_path="$data_path/private/var/db/dslocal/nodes/Default/users"
+	if [ -d "$dscl_path" ]; then
+		for user_plist in "$dscl_path"/*.plist; do
+			if [ -f "$user_plist" ]; then
+				username=$(basename "$user_plist" .plist)
+				case "$username" in
+				root | daemon | nobody | _* | com.apple.*)
+					continue
+					;;
+				*)
+					info "Removing leftover user account: $username"
+					rm -f "$user_plist" 2>/dev/null && success "Removed $username" || warn "Could not remove $username"
+					rm -rf "$data_path/Users/$username" 2>/dev/null
+					;;
+				esac
+			fi
+		done
+	fi
+}
+
+# ─────────────────────────────────────────────
 # Detect volumes
+# ─────────────────────────────────────────────
 volume_info=$(detect_volumes)
 system_volume=$(echo "$volume_info" | cut -d'|' -f1)
 data_volume=$(echo "$volume_info" | cut -d'|' -f2)
@@ -105,143 +200,59 @@ echo ""
 success "System Volume: $system_volume"
 success "Data Volume: $data_volume"
 echo ""
+echo -e "${CYAN}Choose a bypass method:${NC}"
+echo ""
+echo -e "  ${GRN}1) Full Setup Assistant${NC}"
+echo -e "     Removes .AppleSetupDone so macOS runs the complete Setup Assistant."
+echo -e "     You get the full new-Mac experience (Apple ID, Siri, Touch ID, etc)."
+echo -e "     ${YEL}⚠ Best on a fresh erase/reinstall. May show MDM error on cached systems.${NC}"
+echo ""
+echo -e "  ${GRN}2) Quick Bypass (Recommended)${NC}"
+echo -e "     Creates .AppleSetupDone with no users. macOS skips Setup Assistant"
+echo -e "     entirely (including MDM) and just prompts you to create an account."
+echo -e "     ${GRN}✓ Works without erase/reinstall. No MDM pane at all.${NC}"
+echo ""
+echo -e "  ${GRN}3) Reboot & Exit${NC}"
+echo ""
 
 PS3='Please enter your choice: '
-options=("Bypass MDM (Clean Setup)" "Reboot & Exit")
+options=("Full Setup Assistant" "Quick Bypass (Recommended)" "Reboot & Exit")
 select opt in "${options[@]}"; do
 	case $opt in
-	"Bypass MDM (Clean Setup)")
+
+	# ═══════════════════════════════════════════════════
+	# OPTION 1: Full Setup Assistant
+	# ═══════════════════════════════════════════════════
+	"Full Setup Assistant")
 		echo ""
 		echo -e "${YEL}═══════════════════════════════════════${NC}"
-		echo -e "${YEL}  Starting Clean MDM Bypass${NC}"
+		echo -e "${YEL}  Full Setup Assistant Mode${NC}"
 		echo -e "${YEL}═══════════════════════════════════════${NC}"
 		echo ""
 
 		system_path="/Volumes/$system_volume"
 		data_path="/Volumes/$data_volume"
 
-		# Validate paths
 		info "Validating system paths..."
 		[ ! -d "$system_path" ] && error_exit "System volume path does not exist: $system_path"
 		[ ! -d "$data_path" ] && error_exit "Data volume path does not exist: $data_path"
 		success "All system paths validated"
 		echo ""
 
-		# ── Step 1: Block ALL MDM enrollment domains ──
-		# Note: On macOS Big Sur+, the system volume is a Signed System Volume (SSV).
-		# Hosts file changes from Recovery may not persist. This is a belt-and-suspenders
-		# measure — the real bypass comes from Steps 2-4.
+		# Run shared MDM bypass
+		do_mdm_bypass "$system_path" "$data_path"
 
-		info "Blocking MDM enrollment domains..."
+		# Clean up leftover users
+		cleanup_users "$data_path"
 
-		hosts_file="$system_path/etc/hosts"
-		if [ -f "$hosts_file" ]; then
-			mdm_domains=(
-				"deviceenrollment.apple.com"
-				"mdmenrollment.apple.com"
-				"iprofiles.apple.com"
-				"acmdm.apple.com"
-				"axm-adm-mdm.apple.com"
-				"gdmf.apple.com"
-			)
+		# Remove .AppleSetupDone so full Setup Assistant runs
+		info "Ensuring full Setup Assistant will run on next boot..."
 
-			for domain in "${mdm_domains[@]}"; do
-				grep -q "$domain" "$hosts_file" 2>/dev/null || echo "0.0.0.0 $domain" >>"$hosts_file"
-			done
-			success "Blocked ${#mdm_domains[@]} MDM domains in hosts file"
+		setup_done_file="$data_path/private/var/db/.AppleSetupDone"
+		if [ -f "$setup_done_file" ]; then
+			rm -f "$setup_done_file" 2>/dev/null && success "Removed .AppleSetupDone" || warn "Could not remove .AppleSetupDone"
 		else
-			warn "Hosts file not found (SSV may prevent modification) — continuing with other bypass methods"
-		fi
-		echo ""
-
-		# ── Step 2: Nuke ALL MDM configuration data on DATA volume ──
-		# The data volume is writable (not protected by SSV). This is where
-		# the bypass actually works. We destroy all cached activation records,
-		# the CoreData binary store, and any enrollment profiles.
-
-		info "Destroying all MDM configuration data..."
-
-		# Data volume — this is the writable one that matters
-		data_profiles="$data_path/private/var/db/ConfigurationProfiles"
-		if [ -d "$data_profiles" ]; then
-			# Nuke everything in the ConfigurationProfiles directory
-			rm -rf "$data_profiles/Settings"/.cloudConfig* 2>/dev/null
-			rm -rf "$data_profiles/Settings"/* 2>/dev/null
-			rm -rf "$data_profiles/Store"/* 2>/dev/null
-			rm -rf "$data_profiles"/*.enrollment* 2>/dev/null
-			success "Cleared all ConfigurationProfiles data (data volume)"
-		else
-			mkdir -p "$data_profiles/Settings" 2>/dev/null
-			info "No existing ConfigurationProfiles on data volume"
-		fi
-
-		# System volume — may be SSV-protected but try anyway
-		sys_config_path="$system_path/var/db/ConfigurationProfiles/Settings"
-		sys_profiles_path="$system_path/var/db/ConfigurationProfiles"
-
-		if [ -d "$sys_profiles_path" ]; then
-			rm -rf "$sys_config_path"/.cloudConfig* 2>/dev/null
-			rm -rf "$sys_config_path"/* 2>/dev/null
-			rm -rf "$sys_profiles_path/Store"/* 2>/dev/null
-			rm -rf "$sys_profiles_path"/*.enrollment* 2>/dev/null
-			success "Cleared all ConfigurationProfiles data (system volume)"
-		fi
-
-		echo ""
-
-		# ── Step 3: Create bypass markers on BOTH volumes ──
-		info "Creating MDM bypass markers..."
-
-		# Data volume markers (the ones that matter)
-		mkdir -p "$data_profiles/Settings" 2>/dev/null
-		touch "$data_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
-		touch "$data_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
-		success "Created bypass markers on data volume"
-
-		# System volume markers (belt-and-suspenders)
-		mkdir -p "$sys_config_path" 2>/dev/null
-		touch "$sys_config_path/.cloudConfigProfileInstalled" 2>/dev/null
-		touch "$sys_config_path/.cloudConfigRecordNotFound" 2>/dev/null
-		success "Created bypass markers on system volume"
-
-		echo ""
-
-		# ── Step 4: Create .AppleSetupDone WITHOUT creating a user ──
-		# This is the key trick. By marking setup as "done" but having NO user
-		# accounts, macOS will:
-		#   1. See .AppleSetupDone → skip the FULL Setup Assistant (including MDM)
-		#   2. Detect no user accounts exist
-		#   3. Run a REDUCED Setup Assistant that only handles account creation
-		# The reduced Setup Assistant doesn't include the Remote Management pane
-		# because that's part of the initial DEP enrollment flow, not account recovery.
-
-		info "Setting up .AppleSetupDone (no-user trick)..."
-
-		setup_done_dir="$data_path/private/var/db"
-		mkdir -p "$setup_done_dir" 2>/dev/null
-		touch "$setup_done_dir/.AppleSetupDone" 2>/dev/null && success "Created .AppleSetupDone" || warn "Could not create .AppleSetupDone"
-
-		# Make sure no leftover users exist from previous bypass attempts
-		dscl_path="$data_path/private/var/db/dslocal/nodes/Default/users"
-		if [ -d "$dscl_path" ]; then
-			# Remove any non-system user plists (system users have UIDs < 500)
-			for user_plist in "$dscl_path"/*.plist; do
-				if [ -f "$user_plist" ]; then
-					username=$(basename "$user_plist" .plist)
-					# Skip system accounts
-					case "$username" in
-					root | daemon | nobody | _* | com.apple.*)
-						continue
-						;;
-					*)
-						info "Removing leftover user account: $username"
-						rm -f "$user_plist" 2>/dev/null && success "Removed $username" || warn "Could not remove $username"
-						# Also remove their home directory
-						rm -rf "$data_path/Users/$username" 2>/dev/null
-						;;
-					esac
-				fi
-			done
+			success ".AppleSetupDone not present — Setup Assistant will run on boot"
 		fi
 
 		echo ""
@@ -249,12 +260,57 @@ select opt in "${options[@]}"; do
 		echo -e "${GRN}║       MDM Bypass Completed Successfully!          ║${NC}"
 		echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
 		echo ""
-		echo -e "${CYAN}What was done:${NC}"
-		echo -e "  • Blocked MDM domains in /etc/hosts"
-		echo -e "  • Destroyed all cached MDM/enrollment data on both volumes"
-		echo -e "  • Set bypass markers on both volumes"
-		echo -e "  • Created .AppleSetupDone with no user accounts"
-		echo -e "  • Cleaned up any leftover user accounts"
+		echo -e "${CYAN}What happens next:${NC}"
+		echo -e "  1. Close this terminal window"
+		echo -e "  2. Reboot your Mac"
+		echo -e "  3. macOS Setup Assistant will start normally"
+		echo -e "  4. Create your account with Apple ID, Touch ID, Siri, etc."
+		echo -e "  5. The MDM enrollment step should be skipped"
+		echo ""
+		echo -e "${YEL}⚠ If you still see the Remote Management screen, reboot${NC}"
+		echo -e "${YEL}  into Recovery and try Option 2 (Quick Bypass) instead.${NC}"
+		echo ""
+		break
+		;;
+
+	# ═══════════════════════════════════════════════════
+	# OPTION 2: Quick Bypass (no-user trick)
+	# ═══════════════════════════════════════════════════
+	"Quick Bypass (Recommended)")
+		echo ""
+		echo -e "${YEL}═══════════════════════════════════════${NC}"
+		echo -e "${YEL}  Quick Bypass Mode${NC}"
+		echo -e "${YEL}═══════════════════════════════════════${NC}"
+		echo ""
+
+		system_path="/Volumes/$system_volume"
+		data_path="/Volumes/$data_volume"
+
+		info "Validating system paths..."
+		[ ! -d "$system_path" ] && error_exit "System volume path does not exist: $system_path"
+		[ ! -d "$data_path" ] && error_exit "Data volume path does not exist: $data_path"
+		success "All system paths validated"
+		echo ""
+
+		# Run shared MDM bypass
+		do_mdm_bypass "$system_path" "$data_path"
+
+		# Clean up leftover users
+		cleanup_users "$data_path"
+
+		# Create .AppleSetupDone WITHOUT any user accounts
+		# macOS sees "setup done" → skips full Setup Assistant (including MDM pane)
+		# macOS detects no users → runs reduced Setup Assistant for account creation only
+		info "Setting up .AppleSetupDone (no-user trick)..."
+
+		setup_done_dir="$data_path/private/var/db"
+		mkdir -p "$setup_done_dir" 2>/dev/null
+		touch "$setup_done_dir/.AppleSetupDone" 2>/dev/null && success "Created .AppleSetupDone" || warn "Could not create .AppleSetupDone"
+
+		echo ""
+		echo -e "${GRN}╔═══════════════════════════════════════════════════╗${NC}"
+		echo -e "${GRN}║       MDM Bypass Completed Successfully!          ║${NC}"
+		echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
 		echo ""
 		echo -e "${CYAN}What happens next:${NC}"
 		echo -e "  1. Close this terminal window"
@@ -263,12 +319,15 @@ select opt in "${options[@]}"; do
 		echo -e "  4. Create your account — this is YOUR account, not a temp user"
 		echo -e "  5. The MDM Remote Management step will not appear"
 		echo ""
-		echo -e "${YEL}Note: The account creation screen may look slightly different${NC}"
-		echo -e "${YEL}from a normal Setup Assistant, but you'll still get to set${NC}"
-		echo -e "${YEL}up Apple ID, etc. from System Settings after login.${NC}"
+		echo -e "${YEL}Note: Set up Apple ID, Touch ID, and Siri from${NC}"
+		echo -e "${YEL}System Settings after you log in.${NC}"
 		echo ""
 		break
 		;;
+
+	# ═══════════════════════════════════════════════════
+	# OPTION 3: Reboot & Exit
+	# ═══════════════════════════════════════════════════
 	"Reboot & Exit")
 		echo ""
 		info "Rebooting system..."
