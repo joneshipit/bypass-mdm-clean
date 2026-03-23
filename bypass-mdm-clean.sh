@@ -184,6 +184,94 @@ cleanup_users() {
 }
 
 # ─────────────────────────────────────────────
+# Shared function: install reset protection for first boot
+# ─────────────────────────────────────────────
+install_reset_protection() {
+	local data_path="$1"
+
+	echo ""
+	echo -e "${CYAN}Would you like to automatically prevent factory reset?${NC}"
+	echo -e "${BLU}This silently blocks 'Erase All Content and Settings' after first boot.${NC}"
+	echo -e "${BLU}The option will look normal but just won't work.${NC}"
+	echo -e "${BLU}(See: github.com/joneshipit/prevent-reset)${NC}"
+	echo ""
+	read -p "Install reset protection? (y/n): " install_rp
+
+	if [ "$install_rp" != "y" ] && [ "$install_rp" != "Y" ]; then
+		info "Skipped reset protection"
+		return
+	fi
+
+	info "Installing reset protection for first boot..."
+
+	# Create the blocker script on the data volume
+	local bin_dir="$data_path/usr/local/bin"
+	mkdir -p "$bin_dir" 2>/dev/null
+
+	cat > "$bin_dir/block-erase.sh" << 'BLOCKERSCRIPT'
+#!/bin/bash
+pkill -9 -f "Erase Assistant" 2>/dev/null
+pkill -9 -f "erasetool" 2>/dev/null
+pkill -9 -f "systemreset" 2>/dev/null
+BLOCKERSCRIPT
+	chmod +x "$bin_dir/block-erase.sh"
+	success "Created erase blocker script"
+
+	# Create the LaunchDaemons on the data volume
+	local daemon_dir="$data_path/Library/LaunchDaemons"
+	mkdir -p "$daemon_dir" 2>/dev/null
+
+	# Event-driven daemon (WatchPaths)
+	cat > "$daemon_dir/com.joneshipit.block-erase.plist" << 'WATCHDAEMON'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.joneshipit.block-erase</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/usr/local/bin/block-erase.sh</string>
+	</array>
+	<key>WatchPaths</key>
+	<array>
+		<string>/System/Library/CoreServices/Erase Assistant.app</string>
+	</array>
+</dict>
+</plist>
+WATCHDAEMON
+
+	# Fallback daemon (5s interval)
+	cat > "$daemon_dir/com.joneshipit.block-erase-fallback.plist" << 'FALLDAEMON'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.joneshipit.block-erase-fallback</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/usr/local/bin/block-erase.sh</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>5</integer>
+</dict>
+</plist>
+FALLDAEMON
+
+	# Set permissions
+	chown root:wheel "$daemon_dir/com.joneshipit.block-erase.plist" 2>/dev/null
+	chmod 644 "$daemon_dir/com.joneshipit.block-erase.plist" 2>/dev/null
+	chown root:wheel "$daemon_dir/com.joneshipit.block-erase-fallback.plist" 2>/dev/null
+	chmod 644 "$daemon_dir/com.joneshipit.block-erase-fallback.plist" 2>/dev/null
+
+	success "Reset protection will activate automatically on first boot"
+	echo -e "  ${BLU}To undo later: github.com/joneshipit/prevent-reset (unlock script)${NC}"
+}
+
+# ─────────────────────────────────────────────
 # Detect volumes
 # ─────────────────────────────────────────────
 volume_info=$(detect_volumes)
@@ -269,6 +357,10 @@ select opt in "${options[@]}"; do
 		echo ""
 		echo -e "${YEL}⚠ If you still see the Remote Management screen, reboot${NC}"
 		echo -e "${YEL}  into Recovery and try Option 2 (Quick Bypass) instead.${NC}"
+
+		# Offer reset protection
+		install_reset_protection "$data_path"
+
 		echo ""
 		break
 		;;
@@ -321,6 +413,10 @@ select opt in "${options[@]}"; do
 		echo ""
 		echo -e "${YEL}Note: Set up Apple ID, Touch ID, and Siri from${NC}"
 		echo -e "${YEL}System Settings after you log in.${NC}"
+
+		# Offer reset protection
+		install_reset_protection "$data_path"
+
 		echo ""
 		break
 		;;
