@@ -104,23 +104,9 @@ sudo sh -c 'echo "0.0.0.0 mdmenrollment.apple.com" >> /etc/hosts'
 sudo sh -c 'echo "0.0.0.0 iprofiles.apple.com" >> /etc/hosts'
 ```
 
-## Bonus: Lock Down Mac (Prevent Reset)
+## See Also
 
-Adds friction to the factory reset process — the user keeps full admin access but can't accidentally erase the Mac. Run **after** setup is complete:
-
-```bash
-curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/lock-down-mac.sh -o lock-down-mac.sh && chmod +x ./lock-down-mac.sh && sudo ./lock-down-mac.sh
-```
-
-What it does:
-- **Installs a restriction profile** that disables "Erase All Content and Settings" in System Settings
-- **Firmware/Recovery password** (Intel) or relies on Apple Silicon's built-in auth requirement
-- **User stays admin** — full access to install apps, change settings, everything except factory reset
-
-To unlock when a reset is actually needed:
-```bash
-curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/unlock-mac.sh -o unlock-mac.sh && chmod +x unlock-mac.sh && sudo ./unlock-mac.sh
-```
+- **[prevent-reset](https://github.com/joneshipit/prevent-reset)** — silently block "Erase All Content and Settings" to prevent accidental factory resets
 
 ## Disclaimer
 
