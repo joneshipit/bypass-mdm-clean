@@ -6,18 +6,22 @@ Based on [bypass-mdm](https://github.com/assafdori/bypass-mdm) by Assaf Dori.
 
 ## How It Works
 
-The script runs from Recovery Mode and does four things:
+The script runs from Recovery Mode and does five things:
 
-1. **Blocks MDM domains** — adds `0.0.0.0` entries to `/etc/hosts` for Apple's enrollment servers
-2. **Nukes all MDM data** — removes every `.cloudConfig*` file, including the cached activation record that causes Setup Assistant to show the MDM enrollment pane even when servers are blocked
-3. **Creates bypass markers** — writes `.cloudConfigProfileInstalled` and `.cloudConfigRecordNotFound` so macOS thinks MDM is already handled
-4. **Ensures Setup Assistant runs** — removes `.AppleSetupDone` so you get the normal first-boot experience
+1. **Blocks MDM domains** — adds `0.0.0.0` entries to `/etc/hosts` for 6 Apple enrollment servers (`deviceenrollment.apple.com`, `mdmenrollment.apple.com`, `iprofiles.apple.com`, `acmdm.apple.com`, `axm-adm-mdm.apple.com`, `gdmf.apple.com`)
+2. **Nukes all MDM data** — removes every `.cloudConfig*` file and the `ConfigProfiles.binary` CoreData store on both system and data volumes. The binary store caches enrollment state independently of the flag files.
+3. **Disables MDM daemons** — moves `cloudconfigurationd` and all `ManagedClient` LaunchDaemons/LaunchAgents to disabled directories. This prevents macOS from fetching a fresh activation record at boot (which can happen before the hosts file is read).
+4. **Creates bypass markers** — writes `.cloudConfigProfileInstalled` and `.cloudConfigRecordNotFound` on both volumes so macOS thinks MDM is already handled
+5. **Ensures Setup Assistant runs** — removes `.AppleSetupDone` so you get the normal first-boot experience
 
 The key difference from the original: instead of creating a temporary user and marking setup as done, this script ensures Setup Assistant runs on next boot. You create your own account through the normal macOS setup flow — Apple ID, Touch ID, Siri, everything.
 
 ## Features
 
 - **No temporary user** — go straight through Setup Assistant like a new Mac
+- **Daemon-level blocking** — disables `cloudconfigurationd` so MDM can't re-fetch enrollment data at boot
+- **Deep clean** — clears the CoreData binary store, not just flag files
+- **Dual-volume cleanup** — cleans both system and data volumes
 - **Automatic volume detection** — no need to know your volume names
 - **Idempotent** — safe to run multiple times (won't duplicate hosts entries)
 - **Error handling** — color-coded output with validation at each step
