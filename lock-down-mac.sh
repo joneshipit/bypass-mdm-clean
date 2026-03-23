@@ -1,11 +1,12 @@
 #!/bin/bash
 
-# Lock Down Mac — Prevent Erase/Reset
-# Run this AFTER macOS setup is complete.
-# Creates a hidden admin account, demotes the main user to standard,
-# and configures protections to prevent accidental factory reset.
+# Lock Down Mac — Add Friction to Reset
+# Blocks "Erase All Content and Settings" via a configuration profile
+# and optionally sets a firmware/recovery password.
+# The user stays admin — can do everything EXCEPT factory reset.
+# To undo, run: sudo ./unlock-mac.sh
 #
-# Must be run as admin (or with sudo).
+# Must be run with sudo.
 
 RED='\033[1;31m'
 GRN='\033[1;32m'
@@ -31,142 +32,94 @@ warn() {
 	echo -e "${YEL}WARNING: $1${NC}"
 }
 
-# Check if running as root/sudo
 if [ "$(id -u)" -ne 0 ]; then
 	error_exit "This script must be run with sudo. Try: sudo ./lock-down-mac.sh"
 fi
 
 echo ""
 echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  Lock Down Mac — Prevent Erase/Reset             ║${NC}"
+echo -e "${CYAN}║  Lock Down Mac — Block Factory Reset              ║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
-
-# ── Step 1: Identify the user to lock down ──
-echo -e "${CYAN}Current non-system users on this Mac:${NC}"
+echo -e "${BLU}This adds friction to the reset process.${NC}"
+echo -e "${BLU}The user stays admin and can do everything normally —${NC}"
+echo -e "${BLU}they just can't factory reset without the unlock script.${NC}"
 echo ""
 
-# List real users (UID >= 500, not system accounts)
-user_list=()
-while IFS= read -r user; do
-	uid=$(dscl . -read "/Users/$user" UniqueID 2>/dev/null | awk '{print $2}')
-	if [ -n "$uid" ] && [ "$uid" -ge 500 ] 2>/dev/null; then
-		is_admin=""
-		if dscl . -read /Groups/admin GroupMembership 2>/dev/null | grep -qw "$user"; then
-			is_admin=" ${YEL}(admin)${NC}"
-		else
-			is_admin=" ${BLU}(standard)${NC}"
-		fi
-		user_list+=("$user")
-		echo -e "  • $user$is_admin"
-	fi
-done < <(dscl . -list /Users | grep -v '^_' | grep -v '^root$' | grep -v '^daemon$' | grep -v '^nobody$' | sort)
+# ── Step 1: Install a configuration profile that disables Erase All Content and Settings ──
+info "Installing restriction profile to block factory reset..."
 
-echo ""
+profile_path="/Library/ManagedPreferences/com.apple.applicationaccess.plist"
+profile_dir=$(dirname "$profile_path")
+mkdir -p "$profile_dir" 2>/dev/null
 
-if [ ${#user_list[@]} -eq 0 ]; then
-	error_exit "No regular user accounts found."
-fi
+# Create a configuration profile that disables "Erase All Content and Settings"
+cat > /tmp/disable-erase.mobileconfig << 'PROFILE'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadType</key>
+			<string>com.apple.applicationaccess</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>PayloadIdentifier</key>
+			<string>com.joneshipit.disable-erase</string>
+			<key>PayloadUUID</key>
+			<string>A1B2C3D4-E5F6-7890-ABCD-EF1234567890</string>
+			<key>PayloadDisplayName</key>
+			<string>Disable Factory Reset</string>
+			<key>PayloadDescription</key>
+			<string>Prevents Erase All Content and Settings</string>
+			<key>PayloadOrganization</key>
+			<string>Family Admin</string>
+			<key>allowEraseContentAndSettings</key>
+			<false/>
+		</dict>
+	</array>
+	<key>PayloadDisplayName</key>
+	<string>Reset Protection</string>
+	<key>PayloadDescription</key>
+	<string>Prevents accidental factory reset. Contact your family admin to remove.</string>
+	<key>PayloadIdentifier</key>
+	<string>com.joneshipit.reset-protection</string>
+	<key>PayloadUUID</key>
+	<string>F1E2D3C4-B5A6-7890-1234-567890ABCDEF</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+	<key>PayloadRemovalDisallowed</key>
+	<true/>
+</dict>
+</plist>
+PROFILE
 
-read -p "Enter the username to lock down (the one your sister uses): " target_user
+# Install the profile
+profiles install -path /tmp/disable-erase.mobileconfig 2>/dev/null
+profile_installed=$?
 
-# Verify user exists
-if ! dscl . -read "/Users/$target_user" &>/dev/null; then
-	error_exit "User '$target_user' does not exist."
-fi
+# Clean up temp file
+rm -f /tmp/disable-erase.mobileconfig
 
-echo ""
-
-# ── Step 2: Create a hidden admin account ──
-info "Setting up hidden admin account..."
-echo ""
-echo -e "${CYAN}This creates a hidden admin account that only YOU know about.${NC}"
-echo -e "${CYAN}It won't appear on the login screen. You'll use it to manage the Mac.${NC}"
-echo ""
-
-read -p "Enter admin username (e.g., 'macadmin'): " admin_user
-
-# Check if it already exists
-if dscl . -read "/Users/$admin_user" &>/dev/null; then
-	warn "User '$admin_user' already exists."
-	if dscl . -read /Groups/admin GroupMembership 2>/dev/null | grep -qw "$admin_user"; then
-		success "'$admin_user' is already an admin"
-	else
-		dscl . -append /Groups/admin GroupMembership "$admin_user"
-		success "Made '$admin_user' an admin"
-	fi
+if [ $profile_installed -eq 0 ]; then
+	success "Configuration profile installed — 'Erase All Content and Settings' is disabled"
 else
-	read -sp "Enter admin password: " admin_pass
-	echo ""
-	read -sp "Confirm admin password: " admin_pass2
-	echo ""
+	# Fallback: directly write the restriction plist
+	warn "Profile command failed — using direct plist method"
 
-	if [ "$admin_pass" != "$admin_pass2" ]; then
-		error_exit "Passwords don't match."
-	fi
-
-	if [ ${#admin_pass} -lt 4 ]; then
-		error_exit "Password must be at least 4 characters."
-	fi
-
-	# Find next available UID
-	last_uid=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1)
-	new_uid=$((last_uid + 1))
-
-	# Create the admin user
-	sysadminctl -addUser "$admin_user" -password "$admin_pass" -admin 2>/dev/null
-	if [ $? -ne 0 ]; then
-		# Fallback to dscl
-		dscl . -create "/Users/$admin_user"
-		dscl . -create "/Users/$admin_user" UserShell /bin/zsh
-		dscl . -create "/Users/$admin_user" RealName "Mac Admin"
-		dscl . -create "/Users/$admin_user" UniqueID "$new_uid"
-		dscl . -create "/Users/$admin_user" PrimaryGroupID 20
-		dscl . -create "/Users/$admin_user" NFSHomeDirectory "/Users/$admin_user"
-		dscl . -passwd "/Users/$admin_user" "$admin_pass"
-		dscl . -append /Groups/admin GroupMembership "$admin_user"
-		createhomedir -c -u "$admin_user" 2>/dev/null
-	fi
-
-	success "Created admin account: $admin_user"
-
-	# Hide the admin account from login screen
-	dscl . -create "/Users/$admin_user" IsHidden 1
-	success "Hidden from login screen"
-
-	# Hide from Users & Groups in System Settings (hide users with UID under 500 threshold)
-	# Actually, we keep the UID >= 500 but set IsHidden
-	defaults write /Library/Preferences/com.apple.loginwindow HiddenUsersList -array-add "$admin_user" 2>/dev/null
-	success "Hidden from System Settings"
-
-	# Hide home folder
-	if [ -d "/Users/$admin_user" ]; then
-		chflags hidden "/Users/$admin_user" 2>/dev/null
-		success "Hidden home folder"
-	fi
+	defaults write /Library/Preferences/com.apple.applicationaccess allowEraseContentAndSettings -bool false 2>/dev/null
+	success "Restriction set via defaults"
 fi
 
 echo ""
 
-# ── Step 3: Demote the target user to standard ──
-info "Demoting '$target_user' to standard user..."
-
-if dscl . -read /Groups/admin GroupMembership 2>/dev/null | grep -qw "$target_user"; then
-	dscl . -delete /Groups/admin GroupMembership "$target_user" 2>/dev/null
-	success "'$target_user' is now a standard (non-admin) user"
-	echo -e "  ${BLU}→ Cannot access 'Erase All Content and Settings'${NC}"
-	echo -e "  ${BLU}→ Cannot install system-level software${NC}"
-	echo -e "  ${BLU}→ Cannot modify other user accounts${NC}"
-else
-	success "'$target_user' is already a standard user"
-fi
-
-echo ""
-
-# ── Step 4: Disable the ability to boot into Recovery without authentication ──
+# ── Step 2: Firmware / Recovery password ──
 info "Checking Recovery Mode protection..."
 
-# Detect Mac type
 cpu_brand=$(sysctl -n machdep.cpu.brand_string 2>/dev/null)
 if echo "$cpu_brand" | grep -qi "apple"; then
 	mac_type="apple_silicon"
@@ -175,72 +128,33 @@ else
 fi
 
 if [ "$mac_type" = "intel" ]; then
-	# Intel: check for firmware password
 	if command -v firmwarepasswd &>/dev/null; then
 		fw_status=$(firmwarepasswd -check 2>/dev/null)
 		if echo "$fw_status" | grep -qi "Yes"; then
-			success "Firmware password is already set"
+			success "Firmware password already set"
 		else
 			echo ""
-			echo -e "${CYAN}Set a firmware password to prevent Recovery Mode access?${NC}"
-			echo -e "${YEL}This prevents booting into Recovery without the password.${NC}"
+			echo -e "${CYAN}Set a firmware password? This prevents booting into Recovery${NC}"
+			echo -e "${CYAN}Mode without the password (prevents erase from Recovery).${NC}"
 			read -p "Set firmware password? (y/n): " set_fw
 			if [ "$set_fw" = "y" ] || [ "$set_fw" = "Y" ]; then
 				firmwarepasswd -setpasswd
-				if [ $? -eq 0 ]; then
-					success "Firmware password set"
-				else
-					warn "Could not set firmware password"
-				fi
+				[ $? -eq 0 ] && success "Firmware password set" || warn "Could not set firmware password"
 			else
-				warn "Skipped firmware password — Recovery Mode is not password-protected"
+				info "Skipped — Recovery Mode is not password-protected"
 			fi
 		fi
-	else
-		warn "firmwarepasswd not available on this system"
 	fi
 else
-	# Apple Silicon: Recovery always requires user authentication
-	success "Apple Silicon detected — Recovery Mode requires user authentication by default"
-	info "Only admin users (your hidden account) can access Recovery utilities"
+	success "Apple Silicon — Recovery Mode requires user authentication by default"
 fi
 
 echo ""
 
-# ── Step 5: Enable FileVault (if not already) ──
-info "Checking FileVault status..."
-
-fv_status=$(fdesetup status 2>/dev/null)
-if echo "$fv_status" | grep -qi "On"; then
-	success "FileVault is already enabled"
-else
-	echo ""
-	echo -e "${CYAN}Enable FileVault disk encryption?${NC}"
-	echo -e "${BLU}This encrypts the disk and requires a password to boot.${NC}"
-	echo -e "${BLU}Prevents accessing data from Recovery/external boot.${NC}"
-	read -p "Enable FileVault? (y/n): " enable_fv
-	if [ "$enable_fv" = "y" ] || [ "$enable_fv" = "Y" ]; then
-		fdesetup enable -user "$admin_user" 2>/dev/null
-		if [ $? -eq 0 ]; then
-			success "FileVault enabled"
-			echo -e "${YEL}IMPORTANT: Save the recovery key that was displayed above!${NC}"
-		else
-			warn "Could not enable FileVault automatically"
-			info "Enable it manually: System Settings > Privacy & Security > FileVault"
-		fi
-	else
-		info "Skipped FileVault"
-	fi
-fi
-
-echo ""
-
-# ── Step 6: Disable SoftwareUpdate automatic OS upgrades (prevents reset-like behavior) ──
-info "Configuring software update settings..."
-
-# Prevent automatic major OS upgrades (minor security updates still allowed)
+# ── Step 3: Disable automatic OS upgrades (prevents reset-like surprises) ──
+info "Disabling automatic major OS upgrades..."
 defaults write /Library/Preferences/com.apple.SoftwareUpdate AutomaticallyInstallMacOSUpdates -bool false 2>/dev/null
-success "Disabled automatic major OS upgrades"
+success "Automatic major OS upgrades disabled (security updates still work)"
 
 echo ""
 
@@ -249,29 +163,22 @@ echo -e "${GRN}╔════════════════════�
 echo -e "${GRN}║       Mac Locked Down Successfully!               ║${NC}"
 echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${CYAN}What's protected:${NC}"
-echo -e "  ✓ '$target_user' is a standard user — cannot erase/reset the Mac"
-echo -e "  ✓ Hidden admin account '$admin_user' for your management"
+echo -e "${CYAN}What's blocked:${NC}"
+echo -e "  ✗ 'Erase All Content and Settings' is disabled in System Settings"
+echo -e "  ✗ Cannot remove the restriction profile without the unlock script"
 if [ "$mac_type" = "intel" ]; then
-	echo -e "  ✓ Firmware password protects Recovery Mode (if set)"
+	echo -e "  ✗ Recovery Mode requires firmware password (if set)"
 else
-	echo -e "  ✓ Apple Silicon requires admin auth for Recovery Mode"
+	echo -e "  ✗ Recovery Mode requires user authentication"
 fi
 echo ""
-echo -e "${CYAN}To manage the Mac later:${NC}"
-echo -e "  • Log in as '$admin_user' from the login screen:"
-echo -e "    Click 'Other User' and type the username manually"
-echo -e "  • Or use: ${YEL}su - $admin_user${NC} from Terminal"
+echo -e "${CYAN}What still works (everything else):${NC}"
+echo -e "  ✓ Full admin access"
+echo -e "  ✓ Install/uninstall apps"
+echo -e "  ✓ Change all system settings"
+echo -e "  ✓ Create/delete user accounts"
+echo -e "  ✓ Software updates"
 echo ""
-echo -e "${CYAN}What '$target_user' CANNOT do:${NC}"
-echo -e "  ✗ Erase All Content and Settings"
-echo -e "  ✗ Create/delete user accounts"
-echo -e "  ✗ Access Recovery Mode utilities (Apple Silicon)"
-echo -e "  ✗ Change system-level settings"
-echo ""
-echo -e "${CYAN}What '$target_user' CAN still do:${NC}"
-echo -e "  ✓ Install apps from App Store"
-echo -e "  ✓ Use all apps normally"
-echo -e "  ✓ Change their own password"
-echo -e "  ✓ Customize their desktop/settings"
+echo -e "${CYAN}To undo (when she actually needs to reset):${NC}"
+echo -e "  curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/unlock-mac.sh -o unlock-mac.sh && chmod +x unlock-mac.sh && sudo ./unlock-mac.sh"
 echo ""
