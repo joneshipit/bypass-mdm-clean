@@ -104,6 +104,22 @@ sudo sh -c 'echo "0.0.0.0 mdmenrollment.apple.com" >> /etc/hosts'
 sudo sh -c 'echo "0.0.0.0 iprofiles.apple.com" >> /etc/hosts'
 ```
 
+## Bonus: Lock Down Mac (Prevent Reset)
+
+Included script to prevent a user from accidentally erasing/resetting the Mac. Run this **after** setup is complete:
+
+```bash
+curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/lock-down-mac.sh -o lock-down-mac.sh && chmod +x ./lock-down-mac.sh && sudo ./lock-down-mac.sh
+```
+
+What it does:
+- **Creates a hidden admin account** — only you know it exists, doesn't appear on login screen
+- **Demotes the main user to standard** — can't access "Erase All Content and Settings"
+- **Recovery Mode protection** — Apple Silicon requires admin auth; Intel gets a firmware password
+- **Optional FileVault** — encrypts the disk for extra protection
+
+The locked-down user can still install App Store apps, use everything normally, and customize their settings — they just can't wipe the Mac.
+
 ## Disclaimer
 
 > This script prevents MDM profiles from being configured locally. The device serial number may still appear in the organization's MDM inventory. This tool is provided for educational purposes. Use responsibly and at your own risk. Ensure you have proper authorization before using this on any device.
