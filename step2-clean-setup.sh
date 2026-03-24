@@ -5,13 +5,12 @@
 # This script:
 #   1. Permanently blocks MDM domains in /etc/hosts
 #   2. Installs a hosts guard daemon for boot persistence
-#   3. Optionally installs reset protection (prevent-reset)
-#   4. Installs a one-shot cleanup daemon that runs on next boot to:
-#      - Delete all user accounts
-#      - Remove .AppleSetupDone
-#      - Trigger Setup Assistant
-#   5. Reboots
+#   3. Disables MDM enrollment daemons via launchctl
+#   4. Writes Setup Assistant skip keys (managed preferences)
+#   5. Removes MDM configuration profiles
+#   6. Optionally installs reset protection (prevent-reset)
 #
+# Step 3 (from Recovery) handles user deletion and final cleanup.
 # Must be run with sudo.
 
 set -o pipefail
@@ -46,10 +45,11 @@ echo ""
 echo -e "${CYAN}This will:${NC}"
 echo -e "  • Permanently block MDM domains"
 echo -e "  • Install MDM hosts guard daemon"
-echo -e "  • Delete ALL user accounts on next reboot"
-echo -e "  • Reboot into clean Setup Assistant"
+echo -e "  • Disable MDM enrollment daemons"
+echo -e "  • Write Setup Assistant skip keys"
+echo -e "  • Remove MDM configuration profiles"
 echo ""
-echo -e "${YEL}After reboot, you'll go through the full macOS setup${NC}"
+echo -e "${YEL}After Step 3 (Recovery), you'll get the full macOS setup${NC}"
 echo -e "${YEL}experience — Apple ID, Touch ID, Siri — without MDM.${NC}"
 echo ""
 read -p "Continue? (y/n): " confirm
@@ -140,7 +140,101 @@ launchctl bootstrap system /Library/LaunchDaemons/com.joneshipit.mdm-hosts-guard
 success "MDM hosts guard installed"
 echo ""
 
-# ── Step 3: Optional reset protection ──
+# ── Step 3: Disable MDM enrollment daemons via launchctl ──
+info "Disabling MDM enrollment daemons..."
+
+mdm_services=(
+	"com.apple.cloudconfigurationd"
+	"com.apple.DeviceManagement.enrollmentd"
+	"com.apple.ManagedClient.cloudconfigurationd"
+	"com.apple.ManagedClient.enroll"
+	"com.apple.ManagedClient"
+	"com.apple.ManagedClient.startup"
+	"com.apple.mdmclient.daemon"
+	"com.apple.mdmclient.agent"
+	"com.apple.mdmclient"
+)
+
+disabled_count=0
+for svc in "${mdm_services[@]}"; do
+	# launchctl disable sets a persistent override that survives reboot
+	if launchctl disable "system/$svc" 2>/dev/null; then
+		disabled_count=$((disabled_count + 1))
+	fi
+	# Also try to stop it if currently running
+	launchctl bootout "system/$svc" 2>/dev/null
+done
+if [ $disabled_count -gt 0 ]; then
+	success "Disabled $disabled_count MDM services via launchctl"
+else
+	warn "Could not disable services (may require different approach on this macOS version)"
+fi
+echo ""
+
+# ── Step 4: Write Setup Assistant skip keys ──
+info "Writing Setup Assistant skip keys..."
+
+# Managed Preferences — tells Setup Assistant to skip MDM enrollment
+managed_dir="/Library/Managed Preferences"
+mkdir -p "$managed_dir" 2>/dev/null
+
+cat > "$managed_dir/com.apple.SetupAssistant.plist" << 'SKIPEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SkipCloudSetup</key>
+	<true/>
+	<key>SkipDeviceManagement</key>
+	<true/>
+	<key>DidSeeCloudSetup</key>
+	<true/>
+</dict>
+</plist>
+SKIPEOF
+
+if [ -f "$managed_dir/com.apple.SetupAssistant.plist" ]; then
+	success "Skip keys written to $managed_dir"
+else
+	warn "Failed to write skip keys"
+fi
+
+# Also write to standard Preferences as a fallback
+cp "$managed_dir/com.apple.SetupAssistant.plist" /Library/Preferences/com.apple.SetupAssistant.plist 2>/dev/null
+success "Skip keys copied to /Library/Preferences"
+echo ""
+
+# ── Step 5: Remove MDM configuration profiles ──
+info "Removing MDM configuration profiles..."
+
+profiles_dir="/var/db/ConfigurationProfiles"
+if [ -d "$profiles_dir" ]; then
+	# Remove activation record markers
+	rm -f "$profiles_dir/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
+	rm -f "$profiles_dir/Settings/.cloudConfigRecordFound" 2>/dev/null
+	rm -f "$profiles_dir/Settings/.cloudConfigActivationRecord" 2>/dev/null
+	# Set bypass markers
+	touch "$profiles_dir/Settings/.cloudConfigProfileInstalled" 2>/dev/null
+	touch "$profiles_dir/Settings/.cloudConfigRecordNotFound" 2>/dev/null
+	if [ -f "$profiles_dir/Settings/.cloudConfigRecordNotFound" ]; then
+		success "MDM bypass markers set"
+	else
+		warn "Could not write bypass markers (SIP may be blocking — Step 3 will handle this)"
+	fi
+else
+	warn "ConfigurationProfiles directory not found — Step 3 will handle this from Recovery"
+fi
+
+# Try to remove enrolled profiles
+profiles remove -all 2>/dev/null && success "Removed enrolled profiles" || info "No enrolled profiles to remove (or SIP blocked)"
+
+# Flush DNS cache to ensure hosts blocks take effect immediately
+dscacheutil -flushcache 2>/dev/null
+killall -HUP mDNSResponder 2>/dev/null
+success "DNS cache flushed"
+echo ""
+
+# ── Step 6: Optional reset protection ──
 echo -e "${CYAN}Would you like to prevent factory reset?${NC}"
 echo -e "${BLU}This silently blocks 'Erase All Content and Settings'.${NC}"
 echo -e "${BLU}The option looks normal but just won't work.${NC}"
@@ -201,26 +295,21 @@ echo -e "${GRN}║       Step 2 Complete!                            ║${NC}"
 echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${CYAN}Next:${NC}"
-echo -e "  1. Reboot into ${GRN}Recovery Mode${NC}"
+echo -e "  1. ${YEL}Shut down${NC} the Mac (not just reboot)"
+echo -e "  2. Boot into ${GRN}Recovery Mode${NC}"
 echo -e "     (hold Power button → Options → Continue)"
-echo -e "  2. Open Terminal (Utilities → Terminal)"
-echo -e "  3. Run:"
+echo -e "  3. Open Terminal (Utilities → Terminal)"
+echo -e "  4. Run:"
 echo ""
-echo -e "  ${YEL}curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step3-cleanup.sh -o step3.sh && chmod +x step3.sh && ./step3.sh${NC}"
+echo -e "  ${YEL}curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step3-cleanup.sh?$(date +%s) -o step3.sh && chmod +x step3.sh && ./step3.sh${NC}"
 echo ""
-echo -e "  4. Reboot → clean Setup Assistant"
-echo ""
-echo -e "${CYAN}To uninstall MDM bypass later, remove:${NC}"
-echo -e "  /usr/local/bin/mdm-hosts-guard.sh"
-echo -e "  /Library/LaunchDaemons/com.joneshipit.mdm-hosts-guard.plist"
-echo -e "  /usr/local/bin/block-erase.sh (if installed)"
-echo -e "  /Library/LaunchDaemons/com.joneshipit.block-erase.plist (if installed)"
-echo -e "  Then remove the 0.0.0.0 lines from /etc/hosts"
+echo -e "  5. Reboot → clean Setup Assistant"
 echo ""
 echo -e "${CYAN}To uninstall MDM bypass later, remove:${NC}"
 echo -e "  /usr/local/bin/mdm-hosts-guard.sh"
 echo -e "  /Library/LaunchDaemons/com.joneshipit.mdm-hosts-guard.plist"
 echo -e "  /usr/local/bin/block-erase.sh (if installed)"
 echo -e "  /Library/LaunchDaemons/com.joneshipit.block-erase.plist (if installed)"
+echo -e "  /Library/Managed Preferences/com.apple.SetupAssistant.plist"
 echo -e "  Then remove the 0.0.0.0 lines from /etc/hosts"
 echo ""
