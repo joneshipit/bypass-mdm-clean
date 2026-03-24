@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Bypass MDM - Clean Setup (Step 1 of 2)
+# Bypass MDM - Clean Setup (Step 1 of 3)
 # Run from Recovery Mode. Creates a temporary user to boot the system,
 # then Step 2 (run from within macOS) locks down MDM permanently and
 # removes the temp user so Setup Assistant runs clean.
@@ -15,7 +15,7 @@ YEL='\033[1;33m'
 CYAN='\033[1;36m'
 NC='\033[0m'
 
-echo -e "${CYAN}Bypass MDM - Clean Setup (Step 1 of 2)${NC}"
+echo -e "${CYAN}Bypass MDM - Clean Setup (Step 1 of 3)${NC}"
 echo ""
 
 PS3='Please enter your choice: '

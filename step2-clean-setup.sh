@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Bypass MDM - Clean Setup (Step 2 of 2)
+# Bypass MDM - Clean Setup (Step 2 of 3)
 # Run from within macOS (as the temp user from Step 1).
 # This script:
 #   1. Permanently blocks MDM domains in /etc/hosts
@@ -39,7 +39,7 @@ fi
 # Header
 echo ""
 echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  MDM Bypass - Clean Setup (Step 2 of 2)          ║${NC}"
+echo -e "${CYAN}║  MDM Bypass - Clean Setup (Step 2 of 3)          ║${NC}"
 echo -e "${CYAN}║  Run from within macOS                           ║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
