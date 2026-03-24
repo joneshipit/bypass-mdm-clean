@@ -6,20 +6,13 @@ Based on [bypass-mdm](https://github.com/assafdori/bypass-mdm) by Assaf Dori.
 
 ## How It Works
 
-A two-step process that solves the #1 problem with MDM bypasses: the hosts file and config changes made from Recovery Mode get reverted by macOS's Signed System Volume (SSV) protection. By running Step 2 from *within* macOS, the changes write through the firmlink to the data volume — and actually persist.
+A three-step process:
 
-### Step 1: Recovery Mode
-Creates a temporary user account to boot the system, blocks MDM domains, and sets bypass markers. This is similar to the original bypass-mdm approach.
+1. **Step 1 (Recovery):** Create a temp user + block MDM + set bypass markers
+2. **Step 2 (macOS):** Permanently block MDM domains in `/etc/hosts`, install guard daemon
+3. **Step 3 (Recovery):** Delete all user accounts, trigger Setup Assistant
 
-### Step 2: From within macOS
-Logs in as the temp user, then:
-1. **Permanently blocks MDM domains** in `/etc/hosts` — written from within the OS, bypasses SSV
-2. **Installs a hosts guard daemon** — reapplies blocks on every boot (survives OS updates)
-3. **Nukes all MDM configuration data** and sets bypass markers
-4. **Optionally installs reset protection** — silently blocks factory reset ([prevent-reset](https://github.com/joneshipit/prevent-reset))
-5. **Deletes the temporary user** — no leftover accounts
-6. **Removes `.AppleSetupDone`** — triggers Setup Assistant on next boot
-7. **Reboots** → clean Setup Assistant without MDM
+Why three steps? You can't modify `/etc/hosts` from Recovery (SSV blocks it), and you can't delete a user while logged into it. So Step 2 handles hosts from within the OS, and Step 3 handles user cleanup from Recovery.
 
 ## Step-by-Step Instructions
 
@@ -30,56 +23,50 @@ Logs in as the temp user, then:
 | **Apple Silicon** (M1/M2/M3/M4) | Shut down completely. Press and **hold the Power button** until "Loading startup options." Select **Options** → **Continue**. |
 | **Intel** | Shut down completely. Press Power, then immediately **hold ⌘ + R** until the Apple logo appears. |
 
-### 2. Connect to WiFi
-
-Connect to a WiFi network from Recovery Mode.
-
-### 3. Open Terminal
+### 2. Open Terminal
 
 From the menu bar: **Utilities → Terminal**
 
-### 4. Run Step 1
+### 3. Run Step 1
 
 ```bash
 curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/bypass-mdm-clean.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
 ```
 
-Select **1) Bypass MDM (Step 1)**. The script will create a temporary user account.
+Select **1) Bypass MDM (Step 1)**. Close Terminal and reboot.
 
-### 5. Reboot & Log In
+### 4. Log In & Run Step 2
 
-Close Terminal and reboot. Log in as:
-- **Username:** `tmpsetup`
-- **Password:** `1234`
+Log in as **`tmpsetup`** / password **`1234`**. Skip all setup prompts.
 
-Skip all setup prompts (click "Set Up Later" / "Not Now" / "Skip").
-
-### 6. Run Step 2
-
-Once on the desktop, open **Terminal** (Applications → Utilities → Terminal) and run:
+Open **Terminal** and run:
 
 ```bash
 curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step2-clean-setup.sh -o step2.sh && chmod +x step2.sh && sudo ./step2.sh
 ```
 
-Enter the password `1234` when prompted for sudo.
+### 5. Boot into Recovery Mode again
+
+Shut down (don't just reboot — you need to enter Recovery). Boot into Recovery Mode using the same method as step 1.
+
+### 6. Run Step 3
+
+Open Terminal and run:
+
+```bash
+curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step3-cleanup.sh -o step3.sh && chmod +x step3.sh && ./step3.sh
+```
+
+Close Terminal and reboot.
 
 ### 7. Setup Assistant
 
-The Mac will automatically reboot into the full macOS Setup Assistant. Create your account with Apple ID, Touch ID, Siri, and everything else. The MDM enrollment step will be skipped.
-
-## Why Two Steps?
-
-| Approach | Problem |
-|----------|---------|
-| Recovery-only (other scripts) | `/etc/hosts` changes get reverted by SSV on boot |
-| Create temp user + skip setup | Stuck with a temp user account to delete manually |
-| **This script (two-step)** | Hosts changes persist (written from within OS), temp user auto-deleted, full Setup Assistant |
+The Mac boots into a clean Setup Assistant. Create your account with Apple ID, Touch ID, Siri — the works. MDM enrollment will be skipped.
 
 ## Troubleshooting
 
-### MDM still appears in Setup Assistant after Step 2
-The hosts file changes should persist since they're written from within the OS. If MDM still shows, try:
+### MDM still appears in Setup Assistant
+The hosts file changes should persist since they're written from within the OS. If MDM still shows:
 1. Boot into the Mac (it may let you past the error with "Continue")
 2. Open Terminal and verify: `cat /etc/hosts` — MDM domains should be listed
 3. If not, run: `sudo /usr/local/bin/mdm-hosts-guard.sh` to reapply

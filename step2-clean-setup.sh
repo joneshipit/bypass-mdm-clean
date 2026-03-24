@@ -195,91 +195,20 @@ else
 fi
 echo ""
 
-# ── Step 4: Install one-shot cleanup daemon ──
-# This is the key trick: you can't delete a user while logged in as
-# that user. Instead, we install a LaunchDaemon that runs ONCE on
-# next boot — before any user session starts — to:
-#   1. Delete all user accounts (UID >= 500)
-#   2. Remove .AppleSetupDone
-#   3. Remove itself
-# Then loginwindow sees no users + no .AppleSetupDone = Setup Assistant.
-
-info "Installing cleanup daemon (runs on next boot)..."
-
-cat > /usr/local/bin/mdm-cleanup.sh << 'CLEANUP'
-#!/bin/bash
-# One-shot cleanup — runs at boot before login window.
-# Deletes all user accounts, removes .AppleSetupDone, then self-destructs.
-#
-# Uses direct plist file deletion instead of dscl because
-# OpenDirectory isn't ready yet when RunAtLoad daemons fire.
-
-logger -t mdm-cleanup "Starting user cleanup..."
-
-DSLOCAL="/private/var/db/dslocal/nodes/Default/users"
-
-# Delete all non-system user accounts by removing their plist files directly
-for plist in "$DSLOCAL"/*.plist; do
-    [ -f "$plist" ] || continue
-    username=$(basename "$plist" .plist)
-
-    # Skip system users (underscore prefix + well-known system accounts)
-    case "$username" in
-        _*|root|daemon|nobody) continue ;;
-    esac
-
-    logger -t mdm-cleanup "Deleting user: $username"
-    rm -f "$plist"
-    rm -rf "/Users/$username" 2>/dev/null
-done
-
-# Remove .AppleSetupDone to trigger Setup Assistant
-rm -f /private/var/db/.AppleSetupDone 2>/dev/null
-
-logger -t mdm-cleanup "Cleanup complete. Setup Assistant will launch."
-
-# Self-destruct — remove the daemon and this script
-launchctl bootout system /Library/LaunchDaemons/com.joneshipit.mdm-cleanup.plist 2>/dev/null
-rm -f /Library/LaunchDaemons/com.joneshipit.mdm-cleanup.plist
-rm -f /usr/local/bin/mdm-cleanup.sh
-CLEANUP
-chmod +x /usr/local/bin/mdm-cleanup.sh
-
-cat > /Library/LaunchDaemons/com.joneshipit.mdm-cleanup.plist << 'CLEANUPPLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>com.joneshipit.mdm-cleanup</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/bin/bash</string>
-		<string>/usr/local/bin/mdm-cleanup.sh</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-</dict>
-</plist>
-CLEANUPPLIST
-
-chown root:wheel /Library/LaunchDaemons/com.joneshipit.mdm-cleanup.plist
-chmod 644 /Library/LaunchDaemons/com.joneshipit.mdm-cleanup.plist
-
-success "Cleanup daemon installed — will delete all users on next boot"
-echo ""
-
 # ── Done ──
 echo -e "${GRN}╔═══════════════════════════════════════════════════╗${NC}"
 echo -e "${GRN}║       Step 2 Complete!                            ║${NC}"
 echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${CYAN}What happens on reboot:${NC}"
-echo -e "  1. Cleanup daemon runs (before login window)"
-echo -e "  2. All user accounts deleted"
-echo -e "  3. .AppleSetupDone removed"
-echo -e "  4. Cleanup daemon self-destructs"
-echo -e "  5. Setup Assistant launches — create your real account"
+echo -e "${CYAN}Next:${NC}"
+echo -e "  1. Reboot into ${GRN}Recovery Mode${NC}"
+echo -e "     (hold Power button → Options → Continue)"
+echo -e "  2. Open Terminal (Utilities → Terminal)"
+echo -e "  3. Run:"
+echo ""
+echo -e "  ${YEL}curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step3-cleanup.sh -o step3.sh && chmod +x step3.sh && ./step3.sh${NC}"
+echo ""
+echo -e "  4. Reboot → clean Setup Assistant"
 echo ""
 echo -e "${CYAN}To uninstall MDM bypass later, remove:${NC}"
 echo -e "  /usr/local/bin/mdm-hosts-guard.sh"
@@ -288,7 +217,10 @@ echo -e "  /usr/local/bin/block-erase.sh (if installed)"
 echo -e "  /Library/LaunchDaemons/com.joneshipit.block-erase.plist (if installed)"
 echo -e "  Then remove the 0.0.0.0 lines from /etc/hosts"
 echo ""
-echo -e "${YEL}Rebooting in 5 seconds...${NC}"
-sleep 5
-sync
-reboot
+echo -e "${CYAN}To uninstall MDM bypass later, remove:${NC}"
+echo -e "  /usr/local/bin/mdm-hosts-guard.sh"
+echo -e "  /Library/LaunchDaemons/com.joneshipit.mdm-hosts-guard.plist"
+echo -e "  /usr/local/bin/block-erase.sh (if installed)"
+echo -e "  /Library/LaunchDaemons/com.joneshipit.block-erase.plist (if installed)"
+echo -e "  Then remove the 0.0.0.0 lines from /etc/hosts"
+echo ""
