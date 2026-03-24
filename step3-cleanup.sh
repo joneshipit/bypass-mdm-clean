@@ -93,11 +93,26 @@ if [ -f "$hosts_file" ]; then
 fi
 echo ""
 
+# ── Remove saved WiFi networks ──
+# Prevents Setup Assistant from auto-connecting to WiFi.
+# Without internet, MDM enrollment can't phone home and gets skipped.
+echo -e "${CYAN}Removing saved WiFi networks...${NC}"
+rm -f /Volumes/Data/private/var/db/SystemConfiguration/com.apple.wifi.known-networks.plist 2>/dev/null
+rm -f "/Volumes/Data/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist" 2>/dev/null
+rm -f "/Volumes/Data/Library/Preferences/SystemConfiguration/com.apple.wifi.message-tracer.plist" 2>/dev/null
+echo -e "${GRN}✓ WiFi networks cleared — Setup Assistant won't auto-connect${NC}"
+echo ""
+
 # ── Remove .AppleSetupDone ──
 rm -f /Volumes/Data/private/var/db/.AppleSetupDone 2>/dev/null
 echo -e "${GRN}✓ Removed .AppleSetupDone${NC}"
 
 echo ""
 echo -e "${GRN}Done! Close this terminal and restart your Mac.${NC}"
-echo -e "${CYAN}Setup Assistant will launch without MDM enrollment.${NC}"
+echo ""
+echo -e "${CYAN}During Setup Assistant:${NC}"
+echo -e "  • When asked about WiFi, look for ${GRN}'Other options'${NC} or press ${GRN}Cmd+Q${NC}"
+echo -e "  • Skip WiFi / continue without internet"
+echo -e "  • Complete setup, then connect to WiFi from System Settings"
+echo -e "  • The hosts guard daemon will block MDM enrollment"
 echo ""
