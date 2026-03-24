@@ -51,27 +51,54 @@ fi
 printf "\n"
 
 # ═══════════════════════════════════════════════════════
-# PHASE 1: Unlock the system volume (disable SSV/SIP)
-# Without this, ALL writes to the system volume silently
-# fail. This is why our previous attacks didn't work.
+# PHASE 1: Check SIP status and try to unlock system volume
+# On Apple Silicon, csrutil requires interactive auth —
+# we can't script it. Check status and guide the user.
 # ═══════════════════════════════════════════════════════
-printf "${YEL}[1] Unlocking system volume protection...${NC}\n"
-printf "${BLU}  This disables SIP and authenticated root so we can${NC}\n"
-printf "${BLU}  modify system files. We'll re-enable after setup.${NC}\n"
-printf "\n"
+printf "${YEL}[1] Checking system volume protection...${NC}\n"
 
-# Disable SIP
-csrutil disable 2>/dev/null
 sip_status=$(csrutil status 2>/dev/null)
 if echo "$sip_status" | grep -q "disabled"; then
-	printf "${GRN}  ✓ SIP disabled${NC}\n"
+	printf "${GRN}  ✓ SIP is already disabled${NC}\n"
+	SIP_OFF=true
 else
-	printf "${YEL}  ⚠ Could not disable SIP — system volume writes may fail${NC}\n"
-fi
+	printf "${YEL}  SIP is enabled.${NC}\n"
+	printf "\n"
+	printf "${CYAN}  On Apple Silicon, you need to disable SIP manually.${NC}\n"
+	printf "${CYAN}  Would you like to do that now? (This script will wait.)${NC}\n"
+	printf "\n"
+	printf "${YEL}  When prompted by csrutil:${NC}\n"
+	printf "${YEL}    - Type ${GRN}y${YEL} to confirm${NC}\n"
+	printf "${YEL}    - Username: ${GRN}user${NC}\n"
+	printf "${YEL}    - Password: ${GRN}1234${NC}\n"
+	printf "\n"
+	printf "  Press Enter to run 'csrutil disable' now, or type 'skip' to skip: "
+	read -r sip_choice
+	if [ "$sip_choice" != "skip" ]; then
+		printf "\n"
+		csrutil disable
+		printf "\n"
+		# Check again
+		sip_status=$(csrutil status 2>/dev/null)
+		if echo "$sip_status" | grep -q "disabled"; then
+			printf "${GRN}  ✓ SIP disabled successfully${NC}\n"
+			SIP_OFF=true
+		else
+			printf "${YEL}  ⚠ SIP still enabled — system volume writes will be skipped${NC}\n"
+			SIP_OFF=false
+		fi
 
-# Disable authenticated root (SSV)
-csrutil authenticated-root disable 2>/dev/null
-printf "${GRN}  ✓ Authenticated root disabled${NC}\n"
+		# Also disable authenticated root
+		printf "\n"
+		printf "${CYAN}  Now disabling authenticated root (same credentials)...${NC}\n"
+		printf "\n"
+		csrutil authenticated-root disable
+		printf "\n"
+	else
+		printf "${BLU}  ℹ Skipped SIP disable — system volume attacks will be skipped${NC}\n"
+		SIP_OFF=false
+	fi
+fi
 
 # Try to mount system volume read-write
 if [ "$SYS_AVAILABLE" = true ]; then
@@ -81,7 +108,11 @@ if [ "$SYS_AVAILABLE" = true ]; then
 		printf "${GRN}  ✓ System volume mounted read-write${NC}\n"
 		SYS_WRITABLE=true
 	else
-		printf "${YEL}  ⚠ System volume still read-only (may need reboot into Recovery)${NC}\n"
+		printf "${YEL}  ⚠ System volume is read-only${NC}\n"
+		if [ "$SIP_OFF" = true ]; then
+			printf "${YEL}    SIP was just disabled — you may need to reboot into${NC}\n"
+			printf "${YEL}    Recovery and run this script again for it to take effect.${NC}\n"
+		fi
 		SYS_WRITABLE=false
 	fi
 else
