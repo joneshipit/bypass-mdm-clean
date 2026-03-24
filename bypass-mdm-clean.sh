@@ -98,41 +98,18 @@ select opt in "${options[@]}"; do
 		fi
 		echo ""
 
-		# ── Nuke MDM configuration data ──
-		info "Destroying MDM configuration data..."
+		# ── Remove MDM activation records & create bypass markers ──
+		# Only remove the specific MDM files — do NOT wipe Settings/* or Store/*
+		# as those contain boot-critical configuration profiles.
+		# This matches assafdori's targeted approach.
+		info "Removing MDM activation records..."
 
-		# Data volume profiles
-		data_profiles="/Volumes/Data/private/var/db/ConfigurationProfiles"
-		if [ -d "$data_profiles" ]; then
-			rm -rf "$data_profiles/Settings"/.cloudConfig* 2>/dev/null
-			rm -rf "$data_profiles/Settings"/* 2>/dev/null
-			rm -rf "$data_profiles/Store"/* 2>/dev/null
-			rm -rf "$data_profiles"/*.enrollment* 2>/dev/null
-			success "Cleared ConfigurationProfiles (data volume)"
-		fi
-
-		# System volume profiles
-		sys_profiles="/Volumes/Macintosh HD/var/db/ConfigurationProfiles"
-		if [ -d "$sys_profiles" ]; then
-			rm -rf "$sys_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
-			rm -rf "$sys_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
-			rm -rf "$sys_profiles/Settings"/* 2>/dev/null
-			rm -rf "$sys_profiles/Store"/* 2>/dev/null
-			success "Cleared ConfigurationProfiles (system volume)"
-		fi
-		echo ""
-
-		# ── Create bypass markers ──
-		info "Creating MDM bypass markers..."
-		mkdir -p "$data_profiles/Settings" 2>/dev/null
-		touch "$data_profiles/Settings/.cloudConfigProfileInstalled" || warn "Could not create bypass marker on data volume"
-		touch "$data_profiles/Settings/.cloudConfigRecordNotFound" || warn "Could not create bypass marker on data volume"
-		# Also on system volume (matches assafdori approach)
-		if [ -d "$sys_profiles/Settings" ] || mkdir -p "$sys_profiles/Settings" 2>/dev/null; then
-			touch "$sys_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
-			touch "$sys_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
-		fi
-		success "Created bypass markers"
+		sys_profiles="/Volumes/Macintosh HD/var/db/ConfigurationProfiles/Settings"
+		rm -rf "$sys_profiles/.cloudConfigHasActivationRecord" 2>/dev/null
+		rm -rf "$sys_profiles/.cloudConfigRecordFound" 2>/dev/null
+		touch "$sys_profiles/.cloudConfigProfileInstalled" 2>/dev/null
+		touch "$sys_profiles/.cloudConfigRecordNotFound" 2>/dev/null
+		success "Removed MDM records and created bypass markers"
 		echo ""
 
 		# ── Create temporary user ──

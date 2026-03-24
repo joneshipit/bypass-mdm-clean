@@ -124,27 +124,19 @@ else
 fi
 echo ""
 
-# ── Step 2: Nuke all MDM configuration data ──
-info "Destroying all MDM configuration data..."
+# ── Step 2: Remove MDM activation records & set bypass markers ──
+# Only remove the specific MDM files — do NOT wipe Settings/* or Store/*
+# as those contain boot-critical configuration profiles.
+info "Removing MDM activation records..."
 
 config_settings="/var/db/ConfigurationProfiles/Settings"
-config_profiles="/var/db/ConfigurationProfiles"
+mkdir -p "$config_settings" 2>/dev/null
 
-if [ -d "$config_profiles" ]; then
-	rm -rf "$config_settings"/.cloudConfig* 2>/dev/null
-	rm -rf "$config_settings"/* 2>/dev/null
-	rm -rf "$config_profiles/Store"/* 2>/dev/null
-	rm -rf "$config_profiles"/*.enrollment* 2>/dev/null
-	success "Cleared all ConfigurationProfiles data"
-else
-	mkdir -p "$config_settings" || error_exit "Failed to create ConfigurationProfiles directory"
-fi
-
-# Create bypass markers
-mkdir -p "$config_settings" || error_exit "Failed to create Settings directory"
+rm -f "$config_settings/.cloudConfigHasActivationRecord" 2>/dev/null
+rm -f "$config_settings/.cloudConfigRecordFound" 2>/dev/null
 touch "$config_settings/.cloudConfigProfileInstalled" || error_exit "Failed to create bypass marker"
 touch "$config_settings/.cloudConfigRecordNotFound" || error_exit "Failed to create bypass marker"
-success "Created MDM bypass markers"
+success "Removed MDM records and created bypass markers"
 echo ""
 
 # ── Step 3: Install hosts guard daemon ──
