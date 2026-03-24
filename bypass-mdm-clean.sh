@@ -26,66 +26,25 @@ success() { echo -e "${GRN}✓ $1${NC}"; }
 info() { echo -e "${BLU}ℹ $1${NC}"; }
 
 # ─────────────────────────────────────────────
-# Detect system volumes
+# Normalize the Data volume to /Volumes/Data
+# This is the proven approach from assafdori/bypass-mdm:
+# rename whatever the Data volume is called to "Data"
+# so all paths are predictable.
 # ─────────────────────────────────────────────
-detect_volumes() {
-	local system_vol="" data_vol=""
-	info "Detecting system volumes..." >&2
-
-	# Use nullglob so empty globs produce no iterations
-	local _old_nullglob
-	_old_nullglob=$(shopt -p nullglob 2>/dev/null) || true
-	shopt -s nullglob
-
-	for vol in /Volumes/*; do
-		[ -d "$vol" ] || continue
-		vol_name=$(basename "$vol")
-		# Unquoted regex RHS — required for bash 3.2 (macOS Recovery)
-		if [[ ! "$vol_name" =~ Data$ ]] && [[ ! "$vol_name" =~ Recovery ]] && [ -d "$vol/System" ]; then
-			system_vol="$vol_name"
-			info "Found system volume: $system_vol" >&2
-			break
+if [ -d "/Volumes/Macintosh HD - Data" ]; then
+	diskutil rename "Macintosh HD - Data" "Data"
+elif [ ! -d "/Volumes/Data" ]; then
+	# Try to find any volume ending in "Data" and rename it
+	for vol in /Volumes/*Data; do
+		if [ -d "$vol" ] && [ "$vol" != "/Volumes/Data" ]; then
+			vol_name=$(basename "$vol")
+			diskutil rename "$vol_name" "Data" 2>/dev/null && break
 		fi
 	done
+fi
 
-	if [ -z "$system_vol" ]; then
-		for vol in /Volumes/*; do
-			if [ -d "$vol/System" ]; then
-				system_vol=$(basename "$vol")
-				warn "Using volume with /System directory: $system_vol" >&2
-				break
-			fi
-		done
-	fi
-
-	if [ -d "/Volumes/Data" ]; then
-		data_vol="Data"
-		info "Found data volume: $data_vol" >&2
-	elif [ -n "$system_vol" ] && [ -d "/Volumes/$system_vol - Data" ]; then
-		data_vol="$system_vol - Data"
-		info "Found data volume: $data_vol" >&2
-	else
-		for vol in /Volumes/*Data; do
-			if [ -d "$vol" ]; then
-				data_vol=$(basename "$vol")
-				warn "Found data volume: $data_vol" >&2
-				break
-			fi
-		done
-	fi
-
-	# Restore nullglob
-	eval "$_old_nullglob" 2>/dev/null || true
-
-	[ -z "$system_vol" ] && error_exit "Could not detect system volume. Ensure you're in Recovery Mode with macOS installed."
-	[ -z "$data_vol" ] && error_exit "Could not detect data volume. Ensure you're in Recovery Mode with macOS installed."
-
-	echo "$system_vol|$data_vol"
-}
-
-# Detect volumes
-volume_info=$(detect_volumes)
-IFS='|' read -r system_volume data_volume <<< "$volume_info"
+# At this point /Volumes/Data must exist
+[ ! -d "/Volumes/Data" ] && error_exit "Could not find or create /Volumes/Data. Is macOS installed?"
 
 # Header
 echo ""
@@ -93,9 +52,6 @@ echo -e "${CYAN}╔════════════════════�
 echo -e "${CYAN}║  MDM Bypass - Clean Setup (Step 1 of 2)          ║${NC}"
 echo -e "${CYAN}║  Run from Recovery Mode                          ║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
-echo ""
-success "System Volume: $system_volume"
-success "Data Volume: $data_volume"
 echo ""
 echo -e "${CYAN}This creates a temporary user to boot the system.${NC}"
 echo -e "${CYAN}After logging in, run Step 2 to finish the bypass${NC}"
@@ -113,60 +69,15 @@ select opt in "${options[@]}"; do
 		echo -e "${YEL}═══════════════════════════════════════${NC}"
 		echo ""
 
-		system_path="/Volumes/$system_volume"
-		data_path="/Volumes/$data_volume"
-
-		# Validate paths
-		info "Validating system paths..."
-		[ ! -d "$system_path" ] && error_exit "System volume path does not exist: $system_path"
-		[ ! -d "$data_path" ] && error_exit "Data volume path does not exist: $data_path"
-		success "All system paths validated"
-		echo ""
-
-		# ── Normalize Data volume to /Volumes/Data ──
-		# dscl -f needs a valid dslocal node path. On many Macs the Data
-		# volume is named "Macintosh HD - Data" or similar, which can
-		# cause path issues. Renaming to "Data" normalizes everything
-		# and ensures the mount point is predictable.
-		if [ "$data_volume" != "Data" ]; then
-			info "Renaming Data volume from '$data_volume' to 'Data'..."
-			if diskutil rename "$data_volume" "Data" 2>/dev/null; then
-				data_volume="Data"
-				data_path="/Volumes/Data"
-				success "Data volume renamed to 'Data'"
-			else
-				warn "Could not rename Data volume — continuing with '$data_volume'"
-			fi
-			echo ""
-		fi
-
-		# ── Ensure Data volume is mounted read-write ──
-		info "Ensuring Data volume is writable..."
-		if ! touch "$data_path/.rw_test" 2>/dev/null; then
-			info "Data volume is read-only, remounting writable..."
-			mount -uw "$data_path" 2>/dev/null || \
-				diskutil mount -mountPoint "$data_path" readWrite "$data_volume" 2>/dev/null || \
-				error_exit "Could not mount Data volume read-write. Try: diskutil mount -writable \"$data_volume\""
-			touch "$data_path/.rw_test" 2>/dev/null || \
-				error_exit "Data volume is still read-only after remount attempt"
-		fi
-		rm -f "$data_path/.rw_test" 2>/dev/null
-		success "Data volume is writable"
-		echo ""
-
-		dscl_path="$data_path/private/var/db/dslocal/nodes/Default"
-
-		# Verify dslocal database exists at expected path
-		if [ ! -d "$dscl_path" ]; then
-			error_exit "dslocal database not found at: $dscl_path"
-		fi
+		# All paths are hardcoded to /Volumes/Data — proven to work
+		dscl_path="/Volumes/Data/private/var/db/dslocal/nodes/Default"
 
 		# ── Block MDM domains (best effort from Recovery) ──
 		# NOTE: On SSV-protected macOS (Big Sur+), these writes to the system
 		# volume will be invisible after boot. Step 2 handles this properly
 		# by writing from within the running OS.
 		info "Blocking MDM enrollment domains (best effort — Step 2 makes this permanent)..."
-		hosts_file="$system_path/etc/hosts"
+		hosts_file="/Volumes/Macintosh HD/etc/hosts"
 		mdm_domains=(
 			"deviceenrollment.apple.com"
 			"mdmenrollment.apple.com"
@@ -190,20 +101,21 @@ select opt in "${options[@]}"; do
 		# ── Nuke MDM configuration data ──
 		info "Destroying MDM configuration data..."
 
-		data_profiles="$data_path/private/var/db/ConfigurationProfiles"
+		# Data volume profiles
+		data_profiles="/Volumes/Data/private/var/db/ConfigurationProfiles"
 		if [ -d "$data_profiles" ]; then
 			rm -rf "$data_profiles/Settings"/.cloudConfig* 2>/dev/null
 			rm -rf "$data_profiles/Settings"/* 2>/dev/null
 			rm -rf "$data_profiles/Store"/* 2>/dev/null
 			rm -rf "$data_profiles"/*.enrollment* 2>/dev/null
 			success "Cleared ConfigurationProfiles (data volume)"
-		else
-			mkdir -p "$data_profiles/Settings" || error_exit "Failed to create ConfigurationProfiles directory"
-			info "No existing ConfigurationProfiles on data volume"
 		fi
 
-		sys_profiles="$system_path/var/db/ConfigurationProfiles"
+		# System volume profiles
+		sys_profiles="/Volumes/Macintosh HD/var/db/ConfigurationProfiles"
 		if [ -d "$sys_profiles" ]; then
+			rm -rf "$sys_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
+			rm -rf "$sys_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
 			rm -rf "$sys_profiles/Settings"/* 2>/dev/null
 			rm -rf "$sys_profiles/Store"/* 2>/dev/null
 			success "Cleared ConfigurationProfiles (system volume)"
@@ -212,78 +124,53 @@ select opt in "${options[@]}"; do
 
 		# ── Create bypass markers ──
 		info "Creating MDM bypass markers..."
-		mkdir -p "$data_profiles/Settings" || error_exit "Failed to create Settings directory"
-		touch "$data_profiles/Settings/.cloudConfigProfileInstalled" || error_exit "Failed to create bypass marker"
-		touch "$data_profiles/Settings/.cloudConfigRecordNotFound" || error_exit "Failed to create bypass marker"
+		mkdir -p "$data_profiles/Settings" 2>/dev/null
+		touch "$data_profiles/Settings/.cloudConfigProfileInstalled" || warn "Could not create bypass marker on data volume"
+		touch "$data_profiles/Settings/.cloudConfigRecordNotFound" || warn "Could not create bypass marker on data volume"
+		# Also on system volume (matches assafdori approach)
+		if [ -d "$sys_profiles/Settings" ] || mkdir -p "$sys_profiles/Settings" 2>/dev/null; then
+			touch "$sys_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
+			touch "$sys_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
+		fi
 		success "Created bypass markers"
 		echo ""
 
 		# ── Create temporary user ──
 		info "Creating temporary user account..."
-		echo -e "${BLU}This account is just to boot the system. Step 2 will delete it.${NC}"
-		echo ""
 
 		tmp_user="tmpsetup"
 		tmp_pass="1234"
 
-		# Find available UID using PlistBuddy (reliable plist array parsing)
-		last_uid=500
-		if [ -d "$dscl_path/users" ]; then
-			shopt -s nullglob
-			for plist in "$dscl_path/users"/*.plist; do
-				[ -f "$plist" ] || continue
-				# PlistBuddy correctly reads the uid array element
-				uid_val=$(/usr/libexec/PlistBuddy -c "Print :uid:0" "$plist" 2>/dev/null)
-				if [ -n "$uid_val" ] && [ "$uid_val" -gt "$last_uid" ] 2>/dev/null; then
-					last_uid=$uid_val
-				fi
-			done
-			shopt -u nullglob
-		fi
-		new_uid=$((last_uid + 1))
-		info "Assigning UID $new_uid to temporary user"
+		# Create home directory first (matches assafdori order)
+		mkdir -p "/Volumes/Data/Users/$tmp_user"
 
-		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" \
-			|| error_exit "Failed to create user record — is the data volume writable?"
-		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" UserShell "/bin/zsh" \
-			|| error_exit "Failed to set user shell"
-		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" RealName "Temporary Setup" \
-			|| error_exit "Failed to set user RealName"
-		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" UniqueID "$new_uid" \
-			|| error_exit "Failed to set user UID"
-		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" PrimaryGroupID "20" \
-			|| error_exit "Failed to set user group"
-		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" NFSHomeDirectory "/Users/$tmp_user" \
-			|| error_exit "Failed to set user home directory"
-		dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/$tmp_user" "$tmp_pass" \
-			|| warn "Password set may have failed — if login fails, try Recovery again"
-		dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership "$tmp_user" \
-			|| warn "Failed to add user to admin group"
-		mkdir -p "$data_path/Users/$tmp_user" || error_exit "Failed to create user home directory"
+		# Create user via dscl — same commands as assafdori/bypass-mdm
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" UserShell "/bin/zsh"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" RealName "Temporary Setup"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" UniqueID "501"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" PrimaryGroupID "20"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" NFSHomeDirectory "/Users/$tmp_user"
+		dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/$tmp_user" "$tmp_pass"
+		dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership "$tmp_user"
 
 		success "Created temporary user: $tmp_user (password: $tmp_pass)"
 		echo ""
 
-		# ── Embed Step 2 script on the desktop ──
-		info "Embedding Step 2 script on the desktop..."
-		step2_dir="$data_path/Users/$tmp_user/Desktop"
-		mkdir -p "$step2_dir" || error_exit "Failed to create Desktop directory"
-		# Copy step2 from the same source (if available alongside this script)
-		script_dir="$(cd "$(dirname "$0")" && pwd)"
-		if [ -f "$script_dir/step2-clean-setup.sh" ]; then
-			cp "$script_dir/step2-clean-setup.sh" "$step2_dir/step2.sh" \
-				|| error_exit "Failed to copy Step 2 script"
-			chmod +x "$step2_dir/step2.sh"
-			success "Step 2 script placed on desktop (no download needed)"
-		else
-			info "Step 2 script not found alongside Step 1 — user will need to download it"
-		fi
-		echo ""
-
 		# ── Mark setup as done ──
-		touch "$data_path/private/var/db/.AppleSetupDone" || error_exit "Failed to create .AppleSetupDone"
+		touch "/Volumes/Data/private/var/db/.AppleSetupDone"
 		success "Created .AppleSetupDone"
 		echo ""
+
+		# ── Embed Step 2 script on the desktop ──
+		step2_dir="/Volumes/Data/Users/$tmp_user/Desktop"
+		mkdir -p "$step2_dir" 2>/dev/null
+		script_dir="$(cd "$(dirname "$0")" && pwd)"
+		if [ -f "$script_dir/step2-clean-setup.sh" ]; then
+			cp "$script_dir/step2-clean-setup.sh" "$step2_dir/step2.sh"
+			chmod +x "$step2_dir/step2.sh"
+			success "Step 2 script placed on desktop"
+		fi
 
 		# ── Done ──
 		echo -e "${GRN}╔═══════════════════════════════════════════════════╗${NC}"
