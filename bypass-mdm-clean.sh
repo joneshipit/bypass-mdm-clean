@@ -123,17 +123,30 @@ select opt in "${options[@]}"; do
 		success "All system paths validated"
 		echo ""
 
+		# ── Normalize Data volume to /Volumes/Data ──
+		# dscl -f needs a valid dslocal node path. On many Macs the Data
+		# volume is named "Macintosh HD - Data" or similar, which can
+		# cause path issues. Renaming to "Data" normalizes everything
+		# and ensures the mount point is predictable.
+		if [ "$data_volume" != "Data" ]; then
+			info "Renaming Data volume from '$data_volume' to 'Data'..."
+			if diskutil rename "$data_volume" "Data" 2>/dev/null; then
+				data_volume="Data"
+				data_path="/Volumes/Data"
+				success "Data volume renamed to 'Data'"
+			else
+				warn "Could not rename Data volume — continuing with '$data_volume'"
+			fi
+			echo ""
+		fi
+
 		# ── Ensure Data volume is mounted read-write ──
-		# In Recovery Mode on Big Sur+, the Data volume may be mounted
-		# read-only by default. We must make it writable before dscl
-		# can create user records.
 		info "Ensuring Data volume is writable..."
 		if ! touch "$data_path/.rw_test" 2>/dev/null; then
 			info "Data volume is read-only, remounting writable..."
 			mount -uw "$data_path" 2>/dev/null || \
 				diskutil mount -mountPoint "$data_path" readWrite "$data_volume" 2>/dev/null || \
 				error_exit "Could not mount Data volume read-write. Try: diskutil mount -writable \"$data_volume\""
-			# Verify it worked
 			touch "$data_path/.rw_test" 2>/dev/null || \
 				error_exit "Data volume is still read-only after remount attempt"
 		fi
@@ -142,6 +155,11 @@ select opt in "${options[@]}"; do
 		echo ""
 
 		dscl_path="$data_path/private/var/db/dslocal/nodes/Default"
+
+		# Verify dslocal database exists at expected path
+		if [ ! -d "$dscl_path" ]; then
+			error_exit "dslocal database not found at: $dscl_path"
+		fi
 
 		# ── Block MDM domains (best effort from Recovery) ──
 		# NOTE: On SSV-protected macOS (Big Sur+), these writes to the system
