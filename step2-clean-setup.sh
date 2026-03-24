@@ -56,12 +56,16 @@ if [ -f "$MARKER_FILE" ]; then
 	warn "Step 2 has already been run on this machine. Running again anyway."
 fi
 
-TARGET_USER="tmpsetup"
-if dscl . -read "/Users/$TARGET_USER" UniqueID &>/dev/null; then
-	SKIP_USER_DELETE=false
+# Build list of all non-system user accounts (UID >= 500, skip root/daemon/nobody)
+USER_LIST=()
+for user in $(dscl . -list /Users UniqueID 2>/dev/null | awk '$2 >= 500 { print $1 }'); do
+	USER_LIST+=("$user")
+done
+
+if [ ${#USER_LIST[@]} -eq 0 ]; then
+	info "No user accounts found to delete"
 else
-	SKIP_USER_DELETE=true
-	info "User '$TARGET_USER' not found — will skip user deletion"
+	info "Will delete ${#USER_LIST[@]} user account(s): ${USER_LIST[*]}"
 fi
 
 # Header
@@ -74,8 +78,8 @@ echo ""
 echo -e "${CYAN}This will:${NC}"
 echo -e "  • Permanently block MDM domains"
 echo -e "  • Install MDM hosts guard daemon"
-if [ "$SKIP_USER_DELETE" = false ]; then
-	echo -e "  • Delete the temporary '$TARGET_USER' account"
+if [ ${#USER_LIST[@]} -gt 0 ]; then
+	echo -e "  • Delete all user accounts: ${USER_LIST[*]}"
 fi
 echo -e "  • Remove .AppleSetupDone"
 echo -e "  • Reboot into clean Setup Assistant"
@@ -263,29 +267,30 @@ else
 fi
 echo ""
 
-# ── Step 6: Delete the tmpsetup user ──
-if [ "$SKIP_USER_DELETE" = false ]; then
-	info "Deleting temporary user account: $TARGET_USER"
+# ── Step 6: Delete ALL user accounts ──
+if [ ${#USER_LIST[@]} -gt 0 ]; then
+	for del_user in "${USER_LIST[@]}"; do
+		info "Deleting user: $del_user"
 
-	# Use dscl as primary method (more reliable than sysadminctl when
-	# deleting the currently logged-in user)
-	if dscl . -delete "/Users/$TARGET_USER" 2>/dev/null; then
-		success "Deleted user record: $TARGET_USER"
-	else
-		warn "dscl delete failed for $TARGET_USER — may already be deleted"
-	fi
+		# Delete user record
+		if dscl . -delete "/Users/$del_user" 2>/dev/null; then
+			success "Deleted user record: $del_user"
+		else
+			warn "dscl delete failed for $del_user"
+		fi
 
-	# Remove from admin group
-	dscl . -delete /Groups/admin GroupMembership "$TARGET_USER" 2>/dev/null
+		# Remove from admin group
+		dscl . -delete /Groups/admin GroupMembership "$del_user" 2>/dev/null
 
-	# Remove home directory
-	if [ -d "/Users/$TARGET_USER" ]; then
-		rm -rf "/Users/$TARGET_USER" 2>/dev/null && \
-			success "Removed home directory: /Users/$TARGET_USER" || \
-			warn "Could not fully remove /Users/$TARGET_USER"
-	fi
+		# Remove home directory
+		if [ -d "/Users/$del_user" ]; then
+			rm -rf "/Users/$del_user" 2>/dev/null && \
+				success "Removed home directory: /Users/$del_user" || \
+				warn "Could not fully remove /Users/$del_user"
+		fi
+	done
 else
-	info "Skipped user deletion (user '$TARGET_USER' not found)"
+	info "No user accounts to delete"
 fi
 echo ""
 
@@ -304,8 +309,8 @@ echo -e "${CYAN}What was done:${NC}"
 echo -e "  ✓ MDM domains permanently blocked in /etc/hosts"
 echo -e "  ✓ MDM configuration data destroyed"
 echo -e "  ✓ Hosts guard daemon installed (survives OS updates)"
-if [ "$SKIP_USER_DELETE" = false ]; then
-	echo -e "  ✓ Temporary user account '$TARGET_USER' deleted"
+if [ ${#USER_LIST[@]} -gt 0 ]; then
+	echo -e "  ✓ Deleted ${#USER_LIST[@]} user account(s): ${USER_LIST[*]}"
 fi
 echo -e "  ✓ .AppleSetupDone removed"
 echo ""
