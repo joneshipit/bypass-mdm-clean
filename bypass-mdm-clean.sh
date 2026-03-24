@@ -123,6 +123,24 @@ select opt in "${options[@]}"; do
 		success "All system paths validated"
 		echo ""
 
+		# ── Ensure Data volume is mounted read-write ──
+		# In Recovery Mode on Big Sur+, the Data volume may be mounted
+		# read-only by default. We must make it writable before dscl
+		# can create user records.
+		info "Ensuring Data volume is writable..."
+		if ! touch "$data_path/.rw_test" 2>/dev/null; then
+			info "Data volume is read-only, remounting writable..."
+			mount -uw "$data_path" 2>/dev/null || \
+				diskutil mount -mountPoint "$data_path" readWrite "$data_volume" 2>/dev/null || \
+				error_exit "Could not mount Data volume read-write. Try: diskutil mount -writable \"$data_volume\""
+			# Verify it worked
+			touch "$data_path/.rw_test" 2>/dev/null || \
+				error_exit "Data volume is still read-only after remount attempt"
+		fi
+		rm -f "$data_path/.rw_test" 2>/dev/null
+		success "Data volume is writable"
+		echo ""
+
 		dscl_path="$data_path/private/var/db/dslocal/nodes/Default"
 
 		# ── Block MDM domains (best effort from Recovery) ──
