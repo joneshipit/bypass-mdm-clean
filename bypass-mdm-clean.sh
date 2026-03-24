@@ -1,10 +1,9 @@
 #!/bin/bash
 
-# Bypass MDM - Clean Setup Version
-# Blocks MDM enrollment and lets you create your own account without a temp user.
-# Two modes:
-#   Option 1: Full Setup Assistant — erase/reinstall first, get the full macOS setup experience
-#   Option 2: Quick Bypass — no erase needed, skips Setup Assistant, prompts for account creation
+# Bypass MDM - Clean Setup (Step 1 of 2)
+# Run from Recovery Mode. Creates a temporary user to boot the system,
+# then Step 2 (run from within macOS) locks down MDM permanently and
+# removes the temp user so Setup Assistant runs clean.
 #
 # Based on bypass-mdm by Assaf Dori (https://github.com/assafdori/bypass-mdm)
 
@@ -20,24 +19,15 @@ error_exit() {
 	echo -e "${RED}ERROR: $1${NC}" >&2
 	exit 1
 }
+warn() { echo -e "${YEL}WARNING: $1${NC}"; }
+success() { echo -e "${GRN}✓ $1${NC}"; }
+info() { echo -e "${BLU}ℹ $1${NC}"; }
 
-warn() {
-	echo -e "${YEL}WARNING: $1${NC}"
-}
-
-success() {
-	echo -e "${GRN}✓ $1${NC}"
-}
-
-info() {
-	echo -e "${BLU}ℹ $1${NC}"
-}
-
-# Function to detect system volumes
+# ─────────────────────────────────────────────
+# Detect system volumes
+# ─────────────────────────────────────────────
 detect_volumes() {
-	local system_vol=""
-	local data_vol=""
-
+	local system_vol="" data_vol=""
 	info "Detecting system volumes..." >&2
 
 	for vol in /Volumes/*; do
@@ -83,241 +73,7 @@ detect_volumes() {
 	echo "$system_vol|$data_vol"
 }
 
-# ─────────────────────────────────────────────
-# Shared function: block MDM domains & nuke data
-# ─────────────────────────────────────────────
-do_mdm_bypass() {
-	local system_path="$1"
-	local data_path="$2"
-
-	# ── Block MDM enrollment domains ──
-	info "Blocking MDM enrollment domains..."
-
-	hosts_file="$system_path/etc/hosts"
-	if [ -f "$hosts_file" ]; then
-		mdm_domains=(
-			"deviceenrollment.apple.com"
-			"mdmenrollment.apple.com"
-			"iprofiles.apple.com"
-			"acmdm.apple.com"
-			"axm-adm-mdm.apple.com"
-			"gdmf.apple.com"
-		)
-
-		for domain in "${mdm_domains[@]}"; do
-			grep -q "$domain" "$hosts_file" 2>/dev/null || echo "0.0.0.0 $domain" >>"$hosts_file"
-		done
-		success "Blocked ${#mdm_domains[@]} MDM domains in hosts file"
-	else
-		warn "Hosts file not found (SSV may prevent modification)"
-	fi
-	echo ""
-
-	# ── Nuke ALL MDM configuration data ──
-	info "Destroying all MDM configuration data..."
-
-	# Data volume (writable, not SSV-protected — this is what matters)
-	data_profiles="$data_path/private/var/db/ConfigurationProfiles"
-	if [ -d "$data_profiles" ]; then
-		rm -rf "$data_profiles/Settings"/.cloudConfig* 2>/dev/null
-		rm -rf "$data_profiles/Settings"/* 2>/dev/null
-		rm -rf "$data_profiles/Store"/* 2>/dev/null
-		rm -rf "$data_profiles"/*.enrollment* 2>/dev/null
-		success "Cleared all ConfigurationProfiles data (data volume)"
-	else
-		mkdir -p "$data_profiles/Settings" 2>/dev/null
-		info "No existing ConfigurationProfiles on data volume"
-	fi
-
-	# System volume (may be SSV-protected but try anyway)
-	sys_config_path="$system_path/var/db/ConfigurationProfiles/Settings"
-	sys_profiles_path="$system_path/var/db/ConfigurationProfiles"
-
-	if [ -d "$sys_profiles_path" ]; then
-		rm -rf "$sys_config_path"/.cloudConfig* 2>/dev/null
-		rm -rf "$sys_config_path"/* 2>/dev/null
-		rm -rf "$sys_profiles_path/Store"/* 2>/dev/null
-		rm -rf "$sys_profiles_path"/*.enrollment* 2>/dev/null
-		success "Cleared all ConfigurationProfiles data (system volume)"
-	fi
-	echo ""
-
-	# ── Create bypass markers on BOTH volumes ──
-	info "Creating MDM bypass markers..."
-
-	mkdir -p "$data_profiles/Settings" 2>/dev/null
-	touch "$data_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
-	touch "$data_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
-	success "Created bypass markers on data volume"
-
-	mkdir -p "$sys_config_path" 2>/dev/null
-	touch "$sys_config_path/.cloudConfigProfileInstalled" 2>/dev/null
-	touch "$sys_config_path/.cloudConfigRecordNotFound" 2>/dev/null
-	success "Created bypass markers on system volume"
-	echo ""
-
-	# ── Install hosts guard daemon ──
-	# SSV may revert /etc/hosts changes on boot, so install a LaunchDaemon
-	# on the data volume that reapplies MDM domain blocks every boot.
-	info "Installing MDM hosts guard for boot persistence..."
-
-	local bin_dir="$data_path/usr/local/bin"
-	mkdir -p "$bin_dir" 2>/dev/null
-
-	cat > "$bin_dir/mdm-hosts-guard.sh" << 'HOSTSGUARD'
-#!/bin/bash
-# Re-applies MDM domain blocks to /etc/hosts on boot
-# Handles SSV reverting changes
-domains="deviceenrollment.apple.com mdmenrollment.apple.com iprofiles.apple.com acmdm.apple.com axm-adm-mdm.apple.com gdmf.apple.com"
-for domain in $domains; do
-    grep -q "$domain" /etc/hosts 2>/dev/null || echo "0.0.0.0 $domain" >> /etc/hosts
-done
-HOSTSGUARD
-	chmod +x "$bin_dir/mdm-hosts-guard.sh"
-
-	local daemon_dir="$data_path/Library/LaunchDaemons"
-	mkdir -p "$daemon_dir" 2>/dev/null
-
-	cat > "$daemon_dir/com.joneshipit.mdm-hosts-guard.plist" << 'HOSTSDAEMON'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>com.joneshipit.mdm-hosts-guard</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/bin/bash</string>
-		<string>/usr/local/bin/mdm-hosts-guard.sh</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-</dict>
-</plist>
-HOSTSDAEMON
-
-	chown root:wheel "$daemon_dir/com.joneshipit.mdm-hosts-guard.plist" 2>/dev/null
-	chmod 644 "$daemon_dir/com.joneshipit.mdm-hosts-guard.plist" 2>/dev/null
-	success "MDM hosts guard will reapply domain blocks on every boot"
-	echo ""
-}
-
-# ─────────────────────────────────────────────
-# Shared function: clean up leftover user accounts
-# ─────────────────────────────────────────────
-cleanup_users() {
-	local data_path="$1"
-
-	dscl_path="$data_path/private/var/db/dslocal/nodes/Default/users"
-	if [ -d "$dscl_path" ]; then
-		# Collect non-system user accounts
-		local users_to_delete=()
-		for user_plist in "$dscl_path"/*.plist; do
-			if [ -f "$user_plist" ]; then
-				username=$(basename "$user_plist" .plist)
-				case "$username" in
-				root | daemon | nobody | _* | com.apple.*)
-					continue
-					;;
-				*)
-					users_to_delete+=("$username")
-					;;
-				esac
-			fi
-		done
-
-		# If there are user accounts to delete, list them and ask for confirmation
-		if [ ${#users_to_delete[@]} -gt 0 ]; then
-			echo ""
-			warn "The following user accounts will be deleted:"
-			for username in "${users_to_delete[@]}"; do
-				echo -e "  ${RED}• $username${NC} (plist + /Users/$username home folder)"
-			done
-			echo ""
-			echo -e "${YEL}Only proceed if this is a fresh install or you're sure these aren't needed.${NC}"
-			read -p "Delete these user accounts? (y/n): " confirm_delete
-
-			if [ "$confirm_delete" != "y" ] && [ "$confirm_delete" != "Y" ]; then
-				info "Skipped user account cleanup"
-				return
-			fi
-
-			for username in "${users_to_delete[@]}"; do
-				info "Removing leftover user account: $username"
-				rm -f "$dscl_path/$username.plist" 2>/dev/null && success "Removed $username" || warn "Could not remove $username"
-				rm -rf "$data_path/Users/$username" 2>/dev/null
-			done
-		fi
-	fi
-}
-
-# ─────────────────────────────────────────────
-# Shared function: install reset protection for first boot
-# ─────────────────────────────────────────────
-install_reset_protection() {
-	local data_path="$1"
-
-	echo ""
-	echo -e "${CYAN}Would you like to automatically prevent factory reset?${NC}"
-	echo -e "${BLU}This silently blocks 'Erase All Content and Settings' after first boot.${NC}"
-	echo -e "${BLU}The option will look normal but just won't work.${NC}"
-	echo -e "${BLU}(See: github.com/joneshipit/prevent-reset)${NC}"
-	echo ""
-	read -p "Install reset protection? (y/n): " install_rp
-
-	if [ "$install_rp" != "y" ] && [ "$install_rp" != "Y" ]; then
-		info "Skipped reset protection"
-		return
-	fi
-
-	info "Installing reset protection for first boot..."
-
-	# Create the blocker script on the data volume
-	local bin_dir="$data_path/usr/local/bin"
-	mkdir -p "$bin_dir" 2>/dev/null
-
-	cat > "$bin_dir/block-erase.sh" << 'BLOCKERSCRIPT'
-#!/bin/bash
-pkill -9 -f "Erase Assistant" 2>/dev/null
-pkill -9 -f "erasetool" 2>/dev/null
-pkill -9 -f "systemreset" 2>/dev/null
-BLOCKERSCRIPT
-	chmod +x "$bin_dir/block-erase.sh"
-	success "Created erase blocker script"
-
-	# Create the LaunchDaemon on the data volume
-	local daemon_dir="$data_path/Library/LaunchDaemons"
-	mkdir -p "$daemon_dir" 2>/dev/null
-
-	cat > "$daemon_dir/com.joneshipit.block-erase.plist" << 'ERASEDAEMON'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>com.joneshipit.block-erase</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>/bin/bash</string>
-		<string>/usr/local/bin/block-erase.sh</string>
-	</array>
-	<key>StartInterval</key>
-	<integer>2</integer>
-</dict>
-</plist>
-ERASEDAEMON
-
-	# Set permissions
-	chown root:wheel "$daemon_dir/com.joneshipit.block-erase.plist" 2>/dev/null
-	chmod 644 "$daemon_dir/com.joneshipit.block-erase.plist" 2>/dev/null
-
-	success "Reset protection will activate automatically on first boot"
-	echo -e "  ${BLU}To undo later: github.com/joneshipit/prevent-reset (unlock script)${NC}"
-}
-
-# ─────────────────────────────────────────────
 # Detect volumes
-# ─────────────────────────────────────────────
 volume_info=$(detect_volumes)
 system_volume=$(echo "$volume_info" | cut -d'|' -f1)
 data_volume=$(echo "$volume_info" | cut -d'|' -f2)
@@ -325,149 +81,152 @@ data_volume=$(echo "$volume_info" | cut -d'|' -f2)
 # Header
 echo ""
 echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  MDM Bypass - Clean Setup (No Temp User)         ║${NC}"
-echo -e "${CYAN}║  Based on bypass-mdm by Assaf Dori               ║${NC}"
+echo -e "${CYAN}║  MDM Bypass - Clean Setup (Step 1 of 2)          ║${NC}"
+echo -e "${CYAN}║  Run from Recovery Mode                          ║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
 success "System Volume: $system_volume"
 success "Data Volume: $data_volume"
 echo ""
-echo -e "${CYAN}Choose a bypass method:${NC}"
-echo ""
-echo -e "  ${GRN}1) Full Setup Assistant${NC}"
-echo -e "     Removes .AppleSetupDone so macOS runs the complete Setup Assistant."
-echo -e "     You get the full new-Mac experience (Apple ID, Siri, Touch ID, etc)."
-echo -e "     ${YEL}⚠ Best on a fresh erase/reinstall. May show MDM error on cached systems.${NC}"
-echo ""
-echo -e "  ${GRN}2) Quick Bypass (Recommended)${NC}"
-echo -e "     Creates .AppleSetupDone with no users. macOS skips Setup Assistant"
-echo -e "     entirely (including MDM) and just prompts you to create an account."
-echo -e "     ${GRN}✓ Works without erase/reinstall. No MDM pane at all.${NC}"
-echo ""
-echo -e "  ${GRN}3) Reboot & Exit${NC}"
+echo -e "${CYAN}This creates a temporary user to boot the system.${NC}"
+echo -e "${CYAN}After logging in, run Step 2 to finish the bypass${NC}"
+echo -e "${CYAN}and get a clean Setup Assistant experience.${NC}"
 echo ""
 
 PS3='Please enter your choice: '
-options=("Full Setup Assistant" "Quick Bypass (Recommended)" "Reboot & Exit")
+options=("Bypass MDM (Step 1)" "Reboot & Exit")
 select opt in "${options[@]}"; do
 	case $opt in
-
-	# ═══════════════════════════════════════════════════
-	# OPTION 1: Full Setup Assistant
-	# ═══════════════════════════════════════════════════
-	"Full Setup Assistant")
+	"Bypass MDM (Step 1)")
 		echo ""
 		echo -e "${YEL}═══════════════════════════════════════${NC}"
-		echo -e "${YEL}  Full Setup Assistant Mode${NC}"
+		echo -e "${YEL}  Step 1: Recovery Mode Setup${NC}"
 		echo -e "${YEL}═══════════════════════════════════════${NC}"
 		echo ""
 
 		system_path="/Volumes/$system_volume"
 		data_path="/Volumes/$data_volume"
 
+		# Validate paths
 		info "Validating system paths..."
 		[ ! -d "$system_path" ] && error_exit "System volume path does not exist: $system_path"
 		[ ! -d "$data_path" ] && error_exit "Data volume path does not exist: $data_path"
 		success "All system paths validated"
 		echo ""
 
-		# Run shared MDM bypass
-		do_mdm_bypass "$system_path" "$data_path"
-
-		# Clean up leftover users
-		cleanup_users "$data_path"
-
-		# Remove .AppleSetupDone so full Setup Assistant runs
-		info "Ensuring full Setup Assistant will run on next boot..."
-
-		setup_done_file="$data_path/private/var/db/.AppleSetupDone"
-		if [ -f "$setup_done_file" ]; then
-			rm -f "$setup_done_file" 2>/dev/null && success "Removed .AppleSetupDone" || warn "Could not remove .AppleSetupDone"
+		# ── Block MDM domains (best effort from Recovery) ──
+		info "Blocking MDM enrollment domains..."
+		hosts_file="$system_path/etc/hosts"
+		if [ -f "$hosts_file" ]; then
+			mdm_domains=(
+				"deviceenrollment.apple.com"
+				"mdmenrollment.apple.com"
+				"iprofiles.apple.com"
+				"acmdm.apple.com"
+				"axm-adm-mdm.apple.com"
+				"gdmf.apple.com"
+			)
+			for domain in "${mdm_domains[@]}"; do
+				grep -q "$domain" "$hosts_file" 2>/dev/null || echo "0.0.0.0 $domain" >>"$hosts_file"
+			done
+			success "Blocked ${#mdm_domains[@]} MDM domains in hosts file"
 		else
-			success ".AppleSetupDone not present — Setup Assistant will run on boot"
+			warn "Hosts file not found (SSV may prevent — Step 2 will handle this)"
+		fi
+		echo ""
+
+		# ── Nuke MDM configuration data ──
+		info "Destroying MDM configuration data..."
+
+		data_profiles="$data_path/private/var/db/ConfigurationProfiles"
+		if [ -d "$data_profiles" ]; then
+			rm -rf "$data_profiles/Settings"/.cloudConfig* 2>/dev/null
+			rm -rf "$data_profiles/Settings"/* 2>/dev/null
+			rm -rf "$data_profiles/Store"/* 2>/dev/null
+			rm -rf "$data_profiles"/*.enrollment* 2>/dev/null
+			success "Cleared ConfigurationProfiles (data volume)"
+		else
+			mkdir -p "$data_profiles/Settings" 2>/dev/null
+			info "No existing ConfigurationProfiles on data volume"
 		fi
 
+		sys_profiles="$system_path/var/db/ConfigurationProfiles"
+		if [ -d "$sys_profiles" ]; then
+			rm -rf "$sys_profiles/Settings"/* 2>/dev/null
+			rm -rf "$sys_profiles/Store"/* 2>/dev/null
+			success "Cleared ConfigurationProfiles (system volume)"
+		fi
 		echo ""
+
+		# ── Create bypass markers ──
+		info "Creating MDM bypass markers..."
+		mkdir -p "$data_profiles/Settings" 2>/dev/null
+		touch "$data_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
+		touch "$data_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
+		success "Created bypass markers"
+		echo ""
+
+		# ── Create temporary user ──
+		info "Creating temporary user account..."
+		echo -e "${BLU}This account is just to boot the system. Step 2 will delete it.${NC}"
+		echo ""
+
+		tmp_user="tmpsetup"
+		tmp_pass="1234"
+		dscl_path="$data_path/private/var/db/dslocal/nodes/Default"
+
+		# Find available UID
+		last_uid=500
+		if [ -d "$dscl_path/users" ]; then
+			for plist in "$dscl_path/users"/*.plist; do
+				[ -f "$plist" ] || continue
+				# Simple UID extraction — look for integer after UniqueID
+				uid_val=$(defaults read "$plist" uid 2>/dev/null | head -1)
+				if [ -n "$uid_val" ] && [ "$uid_val" -gt "$last_uid" ] 2>/dev/null; then
+					last_uid=$uid_val
+				fi
+			done
+		fi
+		new_uid=$((last_uid + 1))
+
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" UserShell "/bin/zsh"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" RealName "Temporary Setup"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" UniqueID "$new_uid"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" PrimaryGroupID "20"
+		dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$tmp_user" NFSHomeDirectory "/Users/$tmp_user"
+		dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/$tmp_user" "$tmp_pass"
+		dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership "$tmp_user"
+		mkdir -p "$data_path/Users/$tmp_user" 2>/dev/null
+
+		success "Created temporary user: $tmp_user (password: $tmp_pass)"
+		echo ""
+
+		# ── Mark setup as done ──
+		touch "$data_path/private/var/db/.AppleSetupDone" 2>/dev/null
+		success "Created .AppleSetupDone"
+		echo ""
+
+		# ── Done ──
 		echo -e "${GRN}╔═══════════════════════════════════════════════════╗${NC}"
-		echo -e "${GRN}║       MDM Bypass Completed Successfully!          ║${NC}"
+		echo -e "${GRN}║       Step 1 Complete!                            ║${NC}"
 		echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
 		echo ""
-		echo -e "${CYAN}What happens next:${NC}"
-		echo -e "  1. Close this terminal window"
+		echo -e "${CYAN}Next steps:${NC}"
+		echo -e "  1. Close this terminal"
 		echo -e "  2. Reboot your Mac"
-		echo -e "  3. macOS Setup Assistant will start normally"
-		echo -e "  4. Create your account with Apple ID, Touch ID, Siri, etc."
-		echo -e "  5. The MDM enrollment step should be skipped"
+		echo -e "  3. Log in as: ${GRN}$tmp_user${NC} / password: ${GRN}$tmp_pass${NC}"
+		echo -e "  4. Skip all setup prompts (click 'Set Up Later' / 'Not Now')"
+		echo -e "  5. Once on the desktop, open ${GRN}Terminal${NC}"
+		echo -e "  6. Run this command:"
 		echo ""
-		echo -e "${YEL}⚠ If you still see the Remote Management screen, reboot${NC}"
-		echo -e "${YEL}  into Recovery and try Option 2 (Quick Bypass) instead.${NC}"
-
-		# Offer reset protection
-		install_reset_protection "$data_path"
-
+		echo -e "  ${YEL}curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step2-clean-setup.sh -o step2.sh && chmod +x step2.sh && sudo ./step2.sh${NC}"
+		echo ""
+		echo -e "  7. The Mac will reboot into a clean Setup Assistant"
+		echo -e "     — create your real account with Apple ID, Touch ID, etc."
 		echo ""
 		break
 		;;
-
-	# ═══════════════════════════════════════════════════
-	# OPTION 2: Quick Bypass (no-user trick)
-	# ═══════════════════════════════════════════════════
-	"Quick Bypass (Recommended)")
-		echo ""
-		echo -e "${YEL}═══════════════════════════════════════${NC}"
-		echo -e "${YEL}  Quick Bypass Mode${NC}"
-		echo -e "${YEL}═══════════════════════════════════════${NC}"
-		echo ""
-
-		system_path="/Volumes/$system_volume"
-		data_path="/Volumes/$data_volume"
-
-		info "Validating system paths..."
-		[ ! -d "$system_path" ] && error_exit "System volume path does not exist: $system_path"
-		[ ! -d "$data_path" ] && error_exit "Data volume path does not exist: $data_path"
-		success "All system paths validated"
-		echo ""
-
-		# Run shared MDM bypass
-		do_mdm_bypass "$system_path" "$data_path"
-
-		# Clean up leftover users
-		cleanup_users "$data_path"
-
-		# Create .AppleSetupDone WITHOUT any user accounts
-		# macOS sees "setup done" → skips full Setup Assistant (including MDM pane)
-		# macOS detects no users → runs reduced Setup Assistant for account creation only
-		info "Setting up .AppleSetupDone (no-user trick)..."
-
-		setup_done_dir="$data_path/private/var/db"
-		mkdir -p "$setup_done_dir" 2>/dev/null
-		touch "$setup_done_dir/.AppleSetupDone" 2>/dev/null && success "Created .AppleSetupDone" || warn "Could not create .AppleSetupDone"
-
-		echo ""
-		echo -e "${GRN}╔═══════════════════════════════════════════════════╗${NC}"
-		echo -e "${GRN}║       MDM Bypass Completed Successfully!          ║${NC}"
-		echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
-		echo ""
-		echo -e "${CYAN}What happens next:${NC}"
-		echo -e "  1. Close this terminal window"
-		echo -e "  2. Reboot your Mac"
-		echo -e "  3. macOS will detect no user accounts and prompt you to create one"
-		echo -e "  4. Create your account — this is YOUR account, not a temp user"
-		echo -e "  5. The MDM Remote Management step will not appear"
-		echo ""
-		echo -e "${YEL}Note: Set up Apple ID, Touch ID, and Siri from${NC}"
-		echo -e "${YEL}System Settings after you log in.${NC}"
-
-		# Offer reset protection
-		install_reset_protection "$data_path"
-
-		echo ""
-		break
-		;;
-
-	# ═══════════════════════════════════════════════════
-	# OPTION 3: Reboot & Exit
-	# ═══════════════════════════════════════════════════
 	"Reboot & Exit")
 		echo ""
 		info "Rebooting system..."

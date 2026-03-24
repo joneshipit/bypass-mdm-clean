@@ -1,40 +1,25 @@
 # Bypass MDM - Clean Setup
 
-Bypass MDM enrollment on macOS **without creating a temporary user account**. Unlike other MDM bypass scripts that create a throwaway admin account you have to delete later, this script lets you create your own account directly — no cleanup needed.
+Bypass MDM enrollment on macOS **without keeping a temporary user account**. Unlike other MDM bypass scripts where you're stuck with a throwaway admin account, this gives you the **full macOS Setup Assistant experience** — Apple ID, Touch ID, Siri, iCloud — just without the MDM enrollment step.
 
 Based on [bypass-mdm](https://github.com/assafdori/bypass-mdm) by Assaf Dori.
 
-## Two Bypass Modes
-
-### Option 1: Full Setup Assistant
-Removes `.AppleSetupDone` so macOS boots into the **complete Setup Assistant** — the full new-Mac experience with Apple ID, Siri, Touch ID, iCloud, and everything else. Best used after a fresh erase/reinstall. May show a "Remote Management" error on systems with cached MDM data.
-
-### Option 2: Quick Bypass (Recommended)
-Creates `.AppleSetupDone` with **no user accounts**. macOS sees setup as "done," skips the full Setup Assistant (including the MDM pane entirely), then detects no users and prompts you to create an account. Works without erasing or reinstalling. Set up Apple ID, Touch ID, etc. from System Settings after login.
-
 ## How It Works
 
-Both modes share the same MDM bypass steps:
+A two-step process that solves the #1 problem with MDM bypasses: the hosts file and config changes made from Recovery Mode get reverted by macOS's Signed System Volume (SSV) protection. By running Step 2 from *within* macOS, the changes write through the firmlink to the data volume — and actually persist.
 
-1. **Blocks MDM domains** — adds `0.0.0.0` entries to `/etc/hosts` for 6 Apple enrollment servers
-2. **Nukes all MDM data** — removes every `.cloudConfig*` file, the `ConfigProfiles.binary` CoreData store, and enrollment profiles on both system and data volumes
-3. **Creates bypass markers** — writes `.cloudConfigProfileInstalled` and `.cloudConfigRecordNotFound` on both volumes
-4. **Cleans up leftover accounts** — removes user accounts from previous bypass attempts
+### Step 1: Recovery Mode
+Creates a temporary user account to boot the system, blocks MDM domains, and sets bypass markers. This is similar to the original bypass-mdm approach.
 
-Then each mode differs in the final step:
-- **Full Setup Assistant** → removes `.AppleSetupDone` so Setup Assistant runs
-- **Quick Bypass** → creates `.AppleSetupDone` with no users so macOS skips Setup Assistant but still prompts for account creation
-
-## Features
-
-- **No temporary user** — the account you create is YOUR account
-- **Two modes** — try the full setup experience, fall back to quick bypass if MDM persists
-- **No erase/reinstall required** (Quick Bypass mode)
-- **SSV-aware** — focuses on data volume modifications that survive Signed System Volume protections
-- **Deep clean** — clears the CoreData binary store, not just flag files
-- **Dual-volume cleanup** — cleans both system and data volumes
-- **Automatic volume detection** — no need to know your volume names
-- **Idempotent** — safe to run multiple times
+### Step 2: From within macOS
+Logs in as the temp user, then:
+1. **Permanently blocks MDM domains** in `/etc/hosts` — written from within the OS, bypasses SSV
+2. **Installs a hosts guard daemon** — reapplies blocks on every boot (survives OS updates)
+3. **Nukes all MDM configuration data** and sets bypass markers
+4. **Optionally installs reset protection** — silently blocks factory reset ([prevent-reset](https://github.com/joneshipit/prevent-reset))
+5. **Deletes the temporary user** — no leftover accounts
+6. **Removes `.AppleSetupDone`** — triggers Setup Assistant on next boot
+7. **Reboots** → clean Setup Assistant without MDM
 
 ## Step-by-Step Instructions
 
@@ -42,66 +27,70 @@ Then each mode differs in the final step:
 
 | Mac Type | How to Enter Recovery |
 |----------|----------------------|
-| **Apple Silicon** (M1/M2/M3/M4) | Shut down completely. Press and **hold the Power button** until you see "Loading startup options." Select **Options** → **Continue**. |
-| **Intel** | Shut down completely. Press Power, then immediately **hold ⌘ + R** until you see the Apple logo. |
+| **Apple Silicon** (M1/M2/M3/M4) | Shut down completely. Press and **hold the Power button** until "Loading startup options." Select **Options** → **Continue**. |
+| **Intel** | Shut down completely. Press Power, then immediately **hold ⌘ + R** until the Apple logo appears. |
 
-### 2. (Optional) Erase & Reinstall macOS
+### 2. Connect to WiFi
 
-Only needed if you want to use **Option 1 (Full Setup Assistant)**. Open **Disk Utility** from Recovery Mode, erase the internal drive (APFS format), close Disk Utility, and select **Reinstall macOS**. After install completes, boot into Recovery Mode again before first setup.
+Connect to a WiFi network from Recovery Mode.
 
-For **Option 2 (Quick Bypass)**, skip this step entirely.
-
-### 3. Connect to WiFi
-
-Connect to a WiFi network from Recovery Mode. This is needed to download the script.
-
-### 4. Open Terminal
+### 3. Open Terminal
 
 From the menu bar: **Utilities → Terminal**
 
-### 5. Run the Script
+### 4. Run Step 1
 
 ```bash
 curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/bypass-mdm-clean.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
 ```
 
-### 6. Choose Your Mode
+Select **1) Bypass MDM (Step 1)**. The script will create a temporary user account.
 
-The script will auto-detect your volumes and show a menu:
-- **Option 1 — Full Setup Assistant**: Choose this if you erased/reinstalled and want the full macOS setup experience
-- **Option 2 — Quick Bypass**: Choose this if you didn't erase, or if Option 1 showed a Remote Management error
+### 5. Reboot & Log In
 
-### 7. Reboot
+Close Terminal and reboot. Log in as:
+- **Username:** `tmpsetup`
+- **Password:** `1234`
 
-Close the terminal and reboot your Mac.
+Skip all setup prompts (click "Set Up Later" / "Not Now" / "Skip").
 
-## Original Script vs. Clean Setup
+### 6. Run Step 2
 
-| | Original (bypass-mdm) | Clean Setup — Full | Clean Setup — Quick |
-|---|---|---|---|
-| Creates temp user | Yes | No | No |
-| Requires erase | No | Recommended | No |
-| Setup experience | None (skipped) | Full Setup Assistant | Account creation only |
-| Apple ID / Touch ID | Manual after login | During setup | Manual after login |
-| Post-install cleanup | Delete temp user | None | None |
+Once on the desktop, open **Terminal** (Applications → Utilities → Terminal) and run:
+
+```bash
+curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step2-clean-setup.sh -o step2.sh && chmod +x step2.sh && sudo ./step2.sh
+```
+
+Enter the password `1234` when prompted for sudo.
+
+### 7. Setup Assistant
+
+The Mac will automatically reboot into the full macOS Setup Assistant. Create your account with Apple ID, Touch ID, Siri, and everything else. The MDM enrollment step will be skipped.
+
+## Why Two Steps?
+
+| Approach | Problem |
+|----------|---------|
+| Recovery-only (other scripts) | `/etc/hosts` changes get reverted by SSV on boot |
+| Create temp user + skip setup | Stuck with a temp user account to delete manually |
+| **This script (two-step)** | Hosts changes persist (written from within OS), temp user auto-deleted, full Setup Assistant |
 
 ## Troubleshooting
 
-### Option 1 shows "Remote Management" error
-This means the MDM enrollment data was cached from a previous setup attempt. Either erase/reinstall and try again, or just use **Option 2 (Quick Bypass)** which skips the MDM pane entirely.
+### MDM still appears in Setup Assistant after Step 2
+The hosts file changes should persist since they're written from within the OS. If MDM still shows, try:
+1. Boot into the Mac (it may let you past the error with "Continue")
+2. Open Terminal and verify: `cat /etc/hosts` — MDM domains should be listed
+3. If not, run: `sudo /usr/local/bin/mdm-hosts-guard.sh` to reapply
 
-### Account creation screen doesn't appear (Option 2)
-If macOS boots to a login screen, there may be a leftover user account. Boot into Recovery and run the script again — it will clean up leftover accounts automatically.
+### Can't log in as tmpsetup
+Make sure you're using exactly `tmpsetup` (lowercase) with password `1234`. If the account doesn't appear, boot into Recovery and run Step 1 again.
 
-### Volume detection fails
-The script looks for volumes with a `/System` directory (system volume) and volumes ending in "Data" (data volume). Ensure you're running from Recovery Mode with macOS installed.
-
-### MDM prompts appear after login
-Check that the hosts file still has the MDM blocks: `cat /etc/hosts`. macOS updates can reset the hosts file. Re-add blocks with:
+### MDM prompts appear after setup
+The hosts guard daemon should prevent this. Verify it's running:
 ```bash
-sudo sh -c 'echo "0.0.0.0 deviceenrollment.apple.com" >> /etc/hosts'
-sudo sh -c 'echo "0.0.0.0 mdmenrollment.apple.com" >> /etc/hosts'
-sudo sh -c 'echo "0.0.0.0 iprofiles.apple.com" >> /etc/hosts'
+sudo launchctl list | grep mdm-hosts-guard
 ```
 
 ## See Also
