@@ -2,9 +2,8 @@
 
 # Bypass MDM - Clean Setup (Step 3 of 3)
 # Run from Recovery Mode AFTER Step 2.
-# Deletes all user accounts, re-applies MDM bypass markers,
-# and removes .AppleSetupDone so the Mac boots into a clean
-# Setup Assistant without MDM enrollment.
+# Multi-pronged attack to prevent MDM enrollment from appearing
+# in Setup Assistant, then clean up users for a fresh start.
 
 RED='\033[1;31m'
 GRN='\033[1;32m'
@@ -25,94 +24,168 @@ if [ -d "/Volumes/Macintosh HD - Data" ]; then
 	diskutil rename "Macintosh HD - Data" "Data"
 fi
 
-if [ ! -d "/Volumes/Data" ]; then
-	echo -e "${RED}ERROR: /Volumes/Data not found. Is macOS installed?${NC}"
-	exit 1
-fi
+[ ! -d "/Volumes/Data" ] && { echo -e "${RED}ERROR: /Volumes/Data not found${NC}"; exit 1; }
 
-# ── Delete all user accounts ──
-DSLOCAL="/Volumes/Data/private/var/db/dslocal/nodes/Default/users"
-
-echo -e "${CYAN}Deleting all user accounts...${NC}"
+echo -e "${CYAN}Launching multi-pronged MDM bypass...${NC}"
 echo ""
 
+# ═══════════════════════════════════════════════════════
+# ATTACK 1: Clear NVRAM
+# The DEP activation record may be cached in NVRAM.
+# ═══════════════════════════════════════════════════════
+echo -e "${YEL}[1/6] Clearing NVRAM...${NC}"
+nvram -c 2>/dev/null && echo -e "${GRN}  ✓ NVRAM cleared${NC}" || echo -e "${BLU}  ℹ Could not clear NVRAM${NC}"
+echo ""
+
+# ═══════════════════════════════════════════════════════
+# ATTACK 2: Nuke ALL MDM/enrollment data on data volume
+# ═══════════════════════════════════════════════════════
+echo -e "${YEL}[2/6] Destroying MDM enrollment data...${NC}"
+
+data_profiles="/Volumes/Data/private/var/db/ConfigurationProfiles"
+if [ -d "$data_profiles" ]; then
+	rm -rf "$data_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
+	rm -rf "$data_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
+	rm -rf "$data_profiles/Settings/.cloudConfigActivationRecord" 2>/dev/null
+	rm -rf "$data_profiles/Store" 2>/dev/null
+	mkdir -p "$data_profiles/Store" 2>/dev/null
+	rm -rf "$data_profiles"/*.enrollment* 2>/dev/null
+fi
+
+# Create bypass markers
+mkdir -p "$data_profiles/Settings" 2>/dev/null
+touch "$data_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
+touch "$data_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
+echo -e "${GRN}  ✓ MDM data destroyed, bypass markers set (data volume)${NC}"
+
+# Same on system volume
+sys_profiles="/Volumes/Macintosh HD/var/db/ConfigurationProfiles"
+if [ -d "$sys_profiles" ]; then
+	rm -rf "$sys_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
+	rm -rf "$sys_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
+	rm -rf "$sys_profiles/Settings/.cloudConfigActivationRecord" 2>/dev/null
+	mkdir -p "$sys_profiles/Settings" 2>/dev/null
+	touch "$sys_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
+	touch "$sys_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
+	echo -e "${GRN}  ✓ Bypass markers set (system volume)${NC}"
+fi
+echo ""
+
+# ═══════════════════════════════════════════════════════
+# ATTACK 3: Disable MDM-related daemons
+# Prevent cloudconfigurationd and related services from
+# running. If the daemon doesn't run, Setup Assistant
+# can't check enrollment.
+# ═══════════════════════════════════════════════════════
+echo -e "${YEL}[3/6] Disabling MDM enrollment daemons...${NC}"
+
+# Rename the daemon plists so launchd doesn't load them
+mdm_daemons=(
+	"com.apple.ManagedClient.cloudconfigurationd.plist"
+	"com.apple.ManagedClient.enroll.plist"
+	"com.apple.ManagedClient.plist"
+	"com.apple.ManagedClient.startup.plist"
+	"com.apple.mdmclient.daemon.plist"
+	"com.apple.mdmclient.agent.plist"
+)
+
+sys_daemons="/Volumes/Macintosh HD/System/Library/LaunchDaemons"
+sys_agents="/Volumes/Macintosh HD/System/Library/LaunchAgents"
+
+for daemon in "${mdm_daemons[@]}"; do
+	for dir in "$sys_daemons" "$sys_agents"; do
+		if [ -f "$dir/$daemon" ]; then
+			mv "$dir/$daemon" "$dir/${daemon}.disabled" 2>/dev/null && \
+				echo -e "${GRN}  ✓ Disabled: $daemon${NC}" || \
+				echo -e "${BLU}  ℹ Could not disable: $daemon (SSV protected)${NC}"
+		fi
+	done
+done
+echo ""
+
+# ═══════════════════════════════════════════════════════
+# ATTACK 4: Managed preferences skip keys
+# Tell Setup Assistant to skip cloud/MDM setup panes.
+# ═══════════════════════════════════════════════════════
+echo -e "${YEL}[4/6] Writing Setup Assistant skip keys...${NC}"
+
+# Global managed preferences
+managed_prefs="/Volumes/Data/Library/Preferences"
+mkdir -p "$managed_prefs" 2>/dev/null
+
+cat > "$managed_prefs/com.apple.SetupAssistant.managed.plist" << 'SKIPEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SkipCloudSetup</key>
+	<true/>
+	<key>SkipDeviceManagement</key>
+	<true/>
+</dict>
+</plist>
+SKIPEOF
+echo -e "${GRN}  ✓ Skip keys written to managed prefs${NC}"
+
+# Also try the MCX managed preferences path
+mcx_prefs="/Volumes/Data/Library/Managed Preferences"
+mkdir -p "$mcx_prefs" 2>/dev/null
+cp "$managed_prefs/com.apple.SetupAssistant.managed.plist" "$mcx_prefs/" 2>/dev/null
+
+# Try writing to the system volume too
+sys_prefs="/Volumes/Macintosh HD/Library/Preferences"
+cp "$managed_prefs/com.apple.SetupAssistant.managed.plist" "$sys_prefs/" 2>/dev/null
+echo ""
+
+# ═══════════════════════════════════════════════════════
+# ATTACK 5: Clear WiFi networks
+# Prevent Setup Assistant from reaching MDM servers.
+# ═══════════════════════════════════════════════════════
+echo -e "${YEL}[5/6] Clearing saved WiFi networks...${NC}"
+
+rm -f "/Volumes/Data/private/var/db/SystemConfiguration/com.apple.wifi.known-networks.plist" 2>/dev/null
+rm -f "/Volumes/Data/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist" 2>/dev/null
+rm -f "/Volumes/Data/Library/Preferences/SystemConfiguration/com.apple.wifi.message-tracer.plist" 2>/dev/null
+echo -e "${GRN}  ✓ WiFi networks cleared${NC}"
+echo ""
+
+# ═══════════════════════════════════════════════════════
+# ATTACK 6: Delete all users & remove .AppleSetupDone
+# ═══════════════════════════════════════════════════════
+echo -e "${YEL}[6/6] Deleting all user accounts...${NC}"
+
+DSLOCAL="/Volumes/Data/private/var/db/dslocal/nodes/Default/users"
 deleted=0
 for plist in "$DSLOCAL"/*.plist; do
 	[ -f "$plist" ] || continue
 	username=$(basename "$plist" .plist)
-
 	case "$username" in
 		_*|root|daemon|nobody) continue ;;
 	esac
-
-	echo -e "${YEL}  Deleting: $username${NC}"
+	echo -e "  ${YEL}Deleting: $username${NC}"
 	rm -f "$plist"
 	rm -rf "/Volumes/Data/Users/$username" 2>/dev/null
 	deleted=$((deleted + 1))
 done
 
-if [ $deleted -eq 0 ]; then
-	echo -e "${BLU}  No user accounts found to delete${NC}"
-else
-	echo ""
-	echo -e "${GRN}✓ Deleted $deleted user account(s)${NC}"
-fi
-echo ""
+[ $deleted -gt 0 ] && echo -e "${GRN}  ✓ Deleted $deleted account(s)${NC}" || echo -e "${BLU}  ℹ No accounts to delete${NC}"
 
-# ── Re-apply MDM bypass markers ──
-# These get cleared when macOS boots. Must re-set them from Recovery
-# (where SIP/SSV don't block writes) so Setup Assistant skips MDM.
-echo -e "${CYAN}Re-applying MDM bypass markers...${NC}"
-
-sys_profiles="/Volumes/Macintosh HD/var/db/ConfigurationProfiles/Settings"
-if [ -d "/Volumes/Macintosh HD/var/db/ConfigurationProfiles" ]; then
-	mkdir -p "$sys_profiles" 2>/dev/null
-	rm -rf "$sys_profiles/.cloudConfigHasActivationRecord" 2>/dev/null
-	rm -rf "$sys_profiles/.cloudConfigRecordFound" 2>/dev/null
-	touch "$sys_profiles/.cloudConfigProfileInstalled" 2>/dev/null
-	touch "$sys_profiles/.cloudConfigRecordNotFound" 2>/dev/null
-	echo -e "${GRN}✓ MDM bypass markers set (system volume)${NC}"
-fi
-
-data_profiles="/Volumes/Data/private/var/db/ConfigurationProfiles/Settings"
-mkdir -p "$data_profiles" 2>/dev/null
-rm -rf "$data_profiles/.cloudConfigHasActivationRecord" 2>/dev/null
-rm -rf "$data_profiles/.cloudConfigRecordFound" 2>/dev/null
-touch "$data_profiles/.cloudConfigProfileInstalled" 2>/dev/null
-touch "$data_profiles/.cloudConfigRecordNotFound" 2>/dev/null
-echo -e "${GRN}✓ MDM bypass markers set (data volume)${NC}"
-echo ""
-
-# ── Block MDM domains in hosts (best effort) ──
-hosts_file="/Volumes/Macintosh HD/etc/hosts"
-if [ -f "$hosts_file" ]; then
-	for domain in deviceenrollment.apple.com mdmenrollment.apple.com iprofiles.apple.com; do
-		grep -qF "$domain" "$hosts_file" 2>/dev/null || echo "0.0.0.0 $domain" >>"$hosts_file"
-	done
-	echo -e "${GRN}✓ MDM domains blocked in hosts (best effort — Step 2 handles persistence)${NC}"
-fi
-echo ""
-
-# ── Remove saved WiFi networks ──
-# Prevents Setup Assistant from auto-connecting to WiFi.
-# Without internet, MDM enrollment can't phone home and gets skipped.
-echo -e "${CYAN}Removing saved WiFi networks...${NC}"
-rm -f /Volumes/Data/private/var/db/SystemConfiguration/com.apple.wifi.known-networks.plist 2>/dev/null
-rm -f "/Volumes/Data/Library/Preferences/SystemConfiguration/com.apple.airport.preferences.plist" 2>/dev/null
-rm -f "/Volumes/Data/Library/Preferences/SystemConfiguration/com.apple.wifi.message-tracer.plist" 2>/dev/null
-echo -e "${GRN}✓ WiFi networks cleared — Setup Assistant won't auto-connect${NC}"
-echo ""
-
-# ── Remove .AppleSetupDone ──
 rm -f /Volumes/Data/private/var/db/.AppleSetupDone 2>/dev/null
-echo -e "${GRN}✓ Removed .AppleSetupDone${NC}"
+echo -e "${GRN}  ✓ Removed .AppleSetupDone${NC}"
+echo ""
 
+# ═══════════════════════════════════════════════════════
+echo -e "${GRN}╔═══════════════════════════════════════════════════╗${NC}"
+echo -e "${GRN}║       All attacks deployed. Reboot and see.       ║${NC}"
+echo -e "${GRN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${GRN}Done! Close this terminal and restart your Mac.${NC}"
+echo -e "${CYAN}Close this terminal and restart your Mac.${NC}"
+echo -e "${CYAN}Setup Assistant should launch without MDM.${NC}"
 echo ""
-echo -e "${CYAN}During Setup Assistant:${NC}"
-echo -e "  • When asked about WiFi, look for ${GRN}'Other options'${NC} or press ${GRN}Cmd+Q${NC}"
-echo -e "  • Skip WiFi / continue without internet"
-echo -e "  • Complete setup, then connect to WiFi from System Settings"
-echo -e "  • The hosts guard daemon will block MDM enrollment"
+echo -e "${YEL}If MDM STILL appears:${NC}"
+echo -e "  The device has a hardware-level activation record"
+echo -e "  that can only be removed by the organization's"
+echo -e "  MDM admin, or by Apple directly."
+echo -e "  In that case, use the pre-made account approach"
+echo -e "  (re-run this script with --create-user flag)."
 echo ""
