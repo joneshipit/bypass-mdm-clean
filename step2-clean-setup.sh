@@ -128,19 +128,9 @@ else
 fi
 echo ""
 
-# ── Step 2: Remove MDM activation records & set bypass markers ──
-# Only remove the specific MDM files — do NOT wipe Settings/* or Store/*
-# as those contain boot-critical configuration profiles.
-info "Removing MDM activation records..."
-
-config_settings="/var/db/ConfigurationProfiles/Settings"
-mkdir -p "$config_settings" 2>/dev/null
-
-rm -f "$config_settings/.cloudConfigHasActivationRecord" 2>/dev/null
-rm -f "$config_settings/.cloudConfigRecordFound" 2>/dev/null
-touch "$config_settings/.cloudConfigProfileInstalled" || error_exit "Failed to create bypass marker"
-touch "$config_settings/.cloudConfigRecordNotFound" || error_exit "Failed to create bypass marker"
-success "Removed MDM records and created bypass markers"
+# NOTE: MDM activation records and bypass markers are handled in Step 1
+# from Recovery Mode, where SIP doesn't block writes to
+# /var/db/ConfigurationProfiles/. No need to repeat here.
 echo ""
 
 # ── Step 3: Install hosts guard daemon ──
