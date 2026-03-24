@@ -210,15 +210,27 @@ cat > /usr/local/bin/mdm-cleanup.sh << 'CLEANUP'
 #!/bin/bash
 # One-shot cleanup — runs at boot before login window.
 # Deletes all user accounts, removes .AppleSetupDone, then self-destructs.
+#
+# Uses direct plist file deletion instead of dscl because
+# OpenDirectory isn't ready yet when RunAtLoad daemons fire.
 
 logger -t mdm-cleanup "Starting user cleanup..."
 
-# Delete all users with UID >= 500
-for user in $(dscl . -list /Users UniqueID 2>/dev/null | awk '$2 >= 500 { print $1 }'); do
-    logger -t mdm-cleanup "Deleting user: $user"
-    dscl . -delete "/Users/$user" 2>/dev/null
-    dscl . -delete /Groups/admin GroupMembership "$user" 2>/dev/null
-    rm -rf "/Users/$user" 2>/dev/null
+DSLOCAL="/private/var/db/dslocal/nodes/Default/users"
+
+# Delete all non-system user accounts by removing their plist files directly
+for plist in "$DSLOCAL"/*.plist; do
+    [ -f "$plist" ] || continue
+    username=$(basename "$plist" .plist)
+
+    # Skip system users (underscore prefix + well-known system accounts)
+    case "$username" in
+        _*|root|daemon|nobody) continue ;;
+    esac
+
+    logger -t mdm-cleanup "Deleting user: $username"
+    rm -f "$plist"
+    rm -rf "/Users/$username" 2>/dev/null
 done
 
 # Remove .AppleSetupDone to trigger Setup Assistant
