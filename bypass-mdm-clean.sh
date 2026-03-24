@@ -27,17 +27,17 @@ do_bypass() {
 		diskutil rename "Macintosh HD - Data" "Data"
 	fi
 
-	# Create temporary user — identical to assafdori/bypass-mdm
+	# Create user account
 	dscl_path='/Volumes/Data/private/var/db/dslocal/nodes/Default'
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/tmpsetup"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/tmpsetup" UserShell "/bin/zsh"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/tmpsetup" RealName "Temporary Setup"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/tmpsetup" UniqueID "501"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/tmpsetup" PrimaryGroupID "20"
-	mkdir "/Volumes/Data/Users/tmpsetup"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/tmpsetup" NFSHomeDirectory "/Users/tmpsetup"
-	dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/tmpsetup" "1234"
-	dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership tmpsetup
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/user"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/user" UserShell "/bin/zsh"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/user" RealName "User"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/user" UniqueID "501"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/user" PrimaryGroupID "20"
+	mkdir "/Volumes/Data/Users/user"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/user" NFSHomeDirectory "/Users/user"
+	dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/user" "1234"
+	dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership user
 
 	# Block MDM hosts + remove MDM config — on system volume, same as assafdori
 	echo "0.0.0.0 deviceenrollment.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts
@@ -66,12 +66,12 @@ options=(
 echo -e "${CYAN}Choose your path:${NC}"
 echo ""
 echo -e "  ${GRN}Option 1: Quick Setup (2 steps)${NC}"
-echo -e "  Recovery → macOS → done. Simpler but relies on"
-echo -e "  a cleanup daemon to delete users on reboot."
+echo -e "  Recovery → macOS → reboot → done."
+echo -e "  Keeps the 'user' account, triggers setup on next login."
 echo ""
 echo -e "  ${GRN}Option 2: Clean Setup (3 steps)${NC}"
-echo -e "  Recovery → macOS → Recovery → done. More thorough —"
-echo -e "  disables SIP to modify system volume directly."
+echo -e "  Recovery → macOS → Recovery → done."
+echo -e "  Deletes all users, full fresh Setup Assistant."
 echo ""
 
 select opt in "${options[@]}"; do
@@ -81,14 +81,14 @@ select opt in "${options[@]}"; do
 
 		echo -e "${CYAN}Next steps:${NC}"
 		echo -e "  1. Close this terminal and reboot"
-		echo -e "  2. Log in as: ${GRN}tmpsetup${NC} / password: ${GRN}1234${NC}"
+		echo -e "  2. Log in as: ${GRN}user${NC} / password: ${GRN}1234${NC}"
 		echo -e "  3. Skip all setup prompts (click 'Set Up Later' / 'Not Now')"
 		echo -e "  4. Once on the desktop, open ${GRN}Terminal${NC} and run:"
 		echo ""
 		echo -e "  ${YEL}curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step2-quick.sh -o step2.sh && chmod +x step2.sh && sudo ./step2.sh${NC}"
 		echo ""
-		echo -e "  5. The Mac will reboot ${YEL}twice${NC} automatically"
-		echo -e "  6. Setup Assistant appears — create account, Apple ID, Touch ID"
+		echo -e "  5. Reboot, log in as ${GRN}user${NC} / ${GRN}1234${NC}"
+		echo -e "  6. Setup appears — Apple ID, iCloud, Touch ID, Siri"
 		echo ""
 		break
 		;;
@@ -97,7 +97,7 @@ select opt in "${options[@]}"; do
 
 		echo -e "${CYAN}Next steps:${NC}"
 		echo -e "  1. Close this terminal and reboot"
-		echo -e "  2. Log in as: ${GRN}tmpsetup${NC} / password: ${GRN}1234${NC}"
+		echo -e "  2. Log in as: ${GRN}user${NC} / password: ${GRN}1234${NC}"
 		echo -e "  3. Skip all setup prompts (click 'Set Up Later' / 'Not Now')"
 		echo -e "  4. Once on the desktop, open ${GRN}Terminal${NC} and run:"
 		echo ""
