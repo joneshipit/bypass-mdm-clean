@@ -95,11 +95,15 @@ printf "\n"
 # On Apple Silicon, this clears user NVRAM vars but
 # won't touch the SEP-stored activation record.
 # ═══════════════════════════════════════════════════════
-printf "${YEL}[2] Clearing NVRAM...${NC}\n"
-nvram -c 2>/dev/null && printf "${GRN}  ✓ NVRAM cleared${NC}\n" || printf "${BLU}  ℹ Could not clear NVRAM${NC}\n"
-# Also try clearing specific known keys
+printf "${YEL}[2] Clearing MDM-related NVRAM keys...${NC}\n"
+# Targeted deletes only — blanket nvram -c can break boot picker on Apple Silicon
 nvram -d "com.apple.cloudconfig.activation-record" 2>/dev/null
 nvram -d "enrollment-nonce" 2>/dev/null
+nvram -d "com.apple.mdm.token" 2>/dev/null
+nvram -d "com.apple.mdm.lock" 2>/dev/null
+printf "${GRN}  ✓ MDM NVRAM keys cleared${NC}\n"
+# On Apple Silicon, the activation record lives in the Secure Enclave,
+# not NVRAM — so this mainly helps Intel/T2 Macs.
 printf "\n"
 
 # ═══════════════════════════════════════════════════════
@@ -110,14 +114,17 @@ printf "${YEL}[3] Destroying MDM enrollment data...${NC}\n"
 # Data volume (always writable)
 data_profiles="/Volumes/Data/private/var/db/ConfigurationProfiles"
 if [ -d "$data_profiles" ]; then
-	rm -rf "$data_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
-	rm -rf "$data_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
-	rm -rf "$data_profiles/Settings/.cloudConfigActivationRecord" 2>/dev/null
-	rm -rf "$data_profiles/Store" 2>/dev/null
-	mkdir -p "$data_profiles/Store" 2>/dev/null
-	# Safe glob for enrollment files
+	rm -f "$data_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
+	rm -f "$data_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
+	rm -f "$data_profiles/Settings/.cloudConfigActivationRecord" 2>/dev/null
+	# DO NOT rm -rf the Store/ directory — it contains boot-critical data.
+	# Only remove specific MDM enrollment files inside it.
+	for f in "$data_profiles/Store"/*.enrollment* "$data_profiles/Store"/*mdm* "$data_profiles/Store"/*MDM*; do
+		[ -e "$f" ] && rm -f "$f"
+	done
+	# Safe glob for enrollment files at top level
 	for f in "$data_profiles"/*.enrollment*; do
-		[ -e "$f" ] && rm -rf "$f"
+		[ -e "$f" ] && rm -f "$f"
 	done
 fi
 mkdir -p "$data_profiles/Settings" 2>/dev/null
@@ -129,9 +136,9 @@ printf "${GRN}  ✓ Data volume: MDM data destroyed, bypass markers set${NC}\n"
 if [ "$SYS_WRITABLE" = true ]; then
 	sys_profiles="/Volumes/Macintosh HD/var/db/ConfigurationProfiles"
 	if [ -d "$sys_profiles" ]; then
-		rm -rf "$sys_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
-		rm -rf "$sys_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
-		rm -rf "$sys_profiles/Settings/.cloudConfigActivationRecord" 2>/dev/null
+		rm -f "$sys_profiles/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
+		rm -f "$sys_profiles/Settings/.cloudConfigRecordFound" 2>/dev/null
+		rm -f "$sys_profiles/Settings/.cloudConfigActivationRecord" 2>/dev/null
 		mkdir -p "$sys_profiles/Settings" 2>/dev/null
 		touch "$sys_profiles/Settings/.cloudConfigProfileInstalled" 2>/dev/null
 		touch "$sys_profiles/Settings/.cloudConfigRecordNotFound" 2>/dev/null
@@ -271,11 +278,15 @@ printf "\n"
 # ═══════════════════════════════════════════════════════
 if [ "$SYS_WRITABLE" = true ]; then
 	printf "${YEL}[8] Blessing modified system volume...${NC}\n"
-	bless --folder "/Volumes/Macintosh HD/System/Library/CoreServices" --bootefi --create-snapshot 2>/dev/null
-	if [ $? -eq 0 ]; then
+	# Try the cross-platform form first (works on both Intel and Apple Silicon)
+	if bless --mount "/Volumes/Macintosh HD" --create-snapshot 2>/dev/null; then
 		printf "${GRN}  ✓ System volume snapshot created${NC}\n"
+	elif bless --folder "/Volumes/Macintosh HD/System/Library/CoreServices" --bootefi --create-snapshot 2>/dev/null; then
+		# Fallback: Intel-specific form
+		printf "${GRN}  ✓ System volume snapshot created (Intel fallback)${NC}\n"
 	else
 		printf "${YEL}  ⚠ Could not create snapshot — changes may not persist${NC}\n"
+		printf "${YEL}    System volume modifications (daemon renames) may be lost on reboot.${NC}\n"
 	fi
 	printf "\n"
 fi

@@ -13,8 +13,6 @@
 # Step 3 (from Recovery) handles user deletion and final cleanup.
 # Must be run with sudo.
 
-set -o pipefail
-
 RED='\033[1;31m'
 GRN='\033[1;32m'
 BLU='\033[1;34m'
@@ -140,10 +138,36 @@ launchctl bootstrap system /Library/LaunchDaemons/com.joneshipit.mdm-hosts-guard
 success "MDM hosts guard installed"
 echo ""
 
-# ── Step 3: Disable MDM enrollment daemons via launchctl ──
+# ── Step 3: Remove MDM configuration profiles ──
+# Do this BEFORE disabling daemons — profiles command may depend on them
+info "Removing MDM configuration profiles..."
+
+profiles remove -all 2>/dev/null && success "Removed enrolled profiles" || info "No enrolled profiles to remove (or SIP blocked)"
+
+profiles_dir="/var/db/ConfigurationProfiles"
+if [ -d "$profiles_dir" ]; then
+	# Remove activation record markers
+	rm -f "$profiles_dir/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
+	rm -f "$profiles_dir/Settings/.cloudConfigRecordFound" 2>/dev/null
+	rm -f "$profiles_dir/Settings/.cloudConfigActivationRecord" 2>/dev/null
+	# Set bypass markers
+	touch "$profiles_dir/Settings/.cloudConfigProfileInstalled" 2>/dev/null
+	touch "$profiles_dir/Settings/.cloudConfigRecordNotFound" 2>/dev/null
+	if [ -f "$profiles_dir/Settings/.cloudConfigRecordNotFound" ]; then
+		success "MDM bypass markers set"
+	else
+		warn "Could not write bypass markers (SIP may be blocking — Step 3 will handle this)"
+	fi
+else
+	warn "ConfigurationProfiles directory not found — Step 3 will handle this from Recovery"
+fi
+echo ""
+
+# ── Step 4: Disable MDM enrollment daemons via launchctl ──
 info "Disabling MDM enrollment daemons..."
 
-mdm_services=(
+# System-domain daemons
+mdm_daemons=(
 	"com.apple.cloudconfigurationd"
 	"com.apple.DeviceManagement.enrollmentd"
 	"com.apple.ManagedClient.cloudconfigurationd"
@@ -151,12 +175,11 @@ mdm_services=(
 	"com.apple.ManagedClient"
 	"com.apple.ManagedClient.startup"
 	"com.apple.mdmclient.daemon"
-	"com.apple.mdmclient.agent"
 	"com.apple.mdmclient"
 )
 
 disabled_count=0
-for svc in "${mdm_services[@]}"; do
+for svc in "${mdm_daemons[@]}"; do
 	# launchctl disable sets a persistent override that survives reboot
 	if launchctl disable "system/$svc" 2>/dev/null; then
 		disabled_count=$((disabled_count + 1))
@@ -164,6 +187,19 @@ for svc in "${mdm_services[@]}"; do
 	# Also try to stop it if currently running
 	launchctl bootout "system/$svc" 2>/dev/null
 done
+
+# User-domain agents (need gui/<uid>/ prefix)
+mdm_agents=("com.apple.mdmclient.agent")
+logged_in_uid=$(id -u "${SUDO_USER:-}" 2>/dev/null || echo "")
+if [ -n "$logged_in_uid" ]; then
+	for svc in "${mdm_agents[@]}"; do
+		if launchctl disable "gui/$logged_in_uid/$svc" 2>/dev/null; then
+			disabled_count=$((disabled_count + 1))
+		fi
+		launchctl bootout "gui/$logged_in_uid/$svc" 2>/dev/null
+	done
+fi
+
 if [ $disabled_count -gt 0 ]; then
 	success "Disabled $disabled_count MDM services via launchctl"
 else
@@ -171,7 +207,7 @@ else
 fi
 echo ""
 
-# ── Step 4: Write Setup Assistant skip keys ──
+# ── Step 5: Write Setup Assistant skip keys ──
 info "Writing Setup Assistant skip keys..."
 
 # Managed Preferences — tells Setup Assistant to skip MDM enrollment
@@ -204,37 +240,14 @@ cp "$managed_dir/com.apple.SetupAssistant.plist" /Library/Preferences/com.apple.
 success "Skip keys copied to /Library/Preferences"
 echo ""
 
-# ── Step 5: Remove MDM configuration profiles ──
-info "Removing MDM configuration profiles..."
-
-profiles_dir="/var/db/ConfigurationProfiles"
-if [ -d "$profiles_dir" ]; then
-	# Remove activation record markers
-	rm -f "$profiles_dir/Settings/.cloudConfigHasActivationRecord" 2>/dev/null
-	rm -f "$profiles_dir/Settings/.cloudConfigRecordFound" 2>/dev/null
-	rm -f "$profiles_dir/Settings/.cloudConfigActivationRecord" 2>/dev/null
-	# Set bypass markers
-	touch "$profiles_dir/Settings/.cloudConfigProfileInstalled" 2>/dev/null
-	touch "$profiles_dir/Settings/.cloudConfigRecordNotFound" 2>/dev/null
-	if [ -f "$profiles_dir/Settings/.cloudConfigRecordNotFound" ]; then
-		success "MDM bypass markers set"
-	else
-		warn "Could not write bypass markers (SIP may be blocking — Step 3 will handle this)"
-	fi
-else
-	warn "ConfigurationProfiles directory not found — Step 3 will handle this from Recovery"
-fi
-
-# Try to remove enrolled profiles
-profiles remove -all 2>/dev/null && success "Removed enrolled profiles" || info "No enrolled profiles to remove (or SIP blocked)"
-
-# Flush DNS cache to ensure hosts blocks take effect immediately
+# ── Step 6: Flush DNS cache ──
+info "Flushing DNS cache..."
 dscacheutil -flushcache 2>/dev/null
 killall -HUP mDNSResponder 2>/dev/null
-success "DNS cache flushed"
+success "DNS cache flushed — hosts blocks active immediately"
 echo ""
 
-# ── Step 6: Optional reset protection ──
+# ── Step 7: Optional reset protection ──
 echo -e "${CYAN}Would you like to prevent factory reset?${NC}"
 echo -e "${BLU}This silently blocks 'Erase All Content and Settings'.${NC}"
 echo -e "${BLU}The option looks normal but just won't work.${NC}"
