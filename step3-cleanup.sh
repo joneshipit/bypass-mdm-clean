@@ -1,9 +1,10 @@
 #!/bin/bash
 
-# Bypass MDM - Clean Setup (Step 3)
+# Bypass MDM - Clean Setup (Step 3 of 3)
 # Run from Recovery Mode AFTER Step 2.
-# Deletes all user accounts and removes .AppleSetupDone
-# so the Mac boots into a clean Setup Assistant.
+# Deletes all user accounts, re-applies MDM bypass markers,
+# and removes .AppleSetupDone so the Mac boots into a clean
+# Setup Assistant without MDM enrollment.
 
 RED='\033[1;31m'
 GRN='\033[1;32m'
@@ -14,7 +15,7 @@ NC='\033[0m'
 
 echo ""
 echo -e "${CYAN}╔═══════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║  MDM Bypass - Clean Setup (Step 3)               ║${NC}"
+echo -e "${CYAN}║  MDM Bypass - Clean Setup (Step 3 of 3)          ║${NC}"
 echo -e "${CYAN}║  Run from Recovery Mode                          ║${NC}"
 echo -e "${CYAN}╚═══════════════════════════════════════════════════╝${NC}"
 echo ""
@@ -29,6 +30,7 @@ if [ ! -d "/Volumes/Data" ]; then
 	exit 1
 fi
 
+# ── Delete all user accounts ──
 DSLOCAL="/Volumes/Data/private/var/db/dslocal/nodes/Default/users"
 
 echo -e "${CYAN}Deleting all user accounts...${NC}"
@@ -55,14 +57,47 @@ else
 	echo ""
 	echo -e "${GRN}✓ Deleted $deleted user account(s)${NC}"
 fi
-
 echo ""
 
-# Remove .AppleSetupDone
+# ── Re-apply MDM bypass markers ──
+# These get cleared when macOS boots. Must re-set them from Recovery
+# (where SIP/SSV don't block writes) so Setup Assistant skips MDM.
+echo -e "${CYAN}Re-applying MDM bypass markers...${NC}"
+
+sys_profiles="/Volumes/Macintosh HD/var/db/ConfigurationProfiles/Settings"
+if [ -d "/Volumes/Macintosh HD/var/db/ConfigurationProfiles" ]; then
+	mkdir -p "$sys_profiles" 2>/dev/null
+	rm -rf "$sys_profiles/.cloudConfigHasActivationRecord" 2>/dev/null
+	rm -rf "$sys_profiles/.cloudConfigRecordFound" 2>/dev/null
+	touch "$sys_profiles/.cloudConfigProfileInstalled" 2>/dev/null
+	touch "$sys_profiles/.cloudConfigRecordNotFound" 2>/dev/null
+	echo -e "${GRN}✓ MDM bypass markers set (system volume)${NC}"
+fi
+
+data_profiles="/Volumes/Data/private/var/db/ConfigurationProfiles/Settings"
+mkdir -p "$data_profiles" 2>/dev/null
+rm -rf "$data_profiles/.cloudConfigHasActivationRecord" 2>/dev/null
+rm -rf "$data_profiles/.cloudConfigRecordFound" 2>/dev/null
+touch "$data_profiles/.cloudConfigProfileInstalled" 2>/dev/null
+touch "$data_profiles/.cloudConfigRecordNotFound" 2>/dev/null
+echo -e "${GRN}✓ MDM bypass markers set (data volume)${NC}"
+echo ""
+
+# ── Block MDM domains in hosts (best effort) ──
+hosts_file="/Volumes/Macintosh HD/etc/hosts"
+if [ -f "$hosts_file" ]; then
+	for domain in deviceenrollment.apple.com mdmenrollment.apple.com iprofiles.apple.com; do
+		grep -qF "$domain" "$hosts_file" 2>/dev/null || echo "0.0.0.0 $domain" >>"$hosts_file"
+	done
+	echo -e "${GRN}✓ MDM domains blocked in hosts (best effort — Step 2 handles persistence)${NC}"
+fi
+echo ""
+
+# ── Remove .AppleSetupDone ──
 rm -f /Volumes/Data/private/var/db/.AppleSetupDone 2>/dev/null
 echo -e "${GRN}✓ Removed .AppleSetupDone${NC}"
 
 echo ""
-echo -e "${GRN}Done! Reboot into a clean Setup Assistant.${NC}"
-echo -e "${CYAN}Close this terminal and restart your Mac.${NC}"
+echo -e "${GRN}Done! Close this terminal and restart your Mac.${NC}"
+echo -e "${CYAN}Setup Assistant will launch without MDM enrollment.${NC}"
 echo ""
