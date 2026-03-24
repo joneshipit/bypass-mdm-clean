@@ -119,9 +119,26 @@ success "Hosts guard installed"
 # ── 3. Install reset protection ──
 info "Installing reset protection..."
 
+# Disable erase services via launchctl (persistent — survives reboot)
+# This prevents Erase Assistant from launching at all — button does nothing
+erase_services=(
+	"com.apple.EraseAssistant"
+	"com.apple.eraseassistant"
+	"com.apple.erasetool"
+	"com.apple.systemreset"
+	"com.apple.MobileAsset.EraseAssistant"
+)
+
+for svc in "${erase_services[@]}"; do
+	launchctl disable "system/$svc" 2>/dev/null
+	launchctl disable "gui/$(id -u "${SUDO_USER:-}")/$svc" 2>/dev/null
+done
+success "Erase services disabled via launchctl"
+
+# Backup: kill any erase process that somehow gets through (1-second poll)
 cat > /usr/local/bin/block-erase.sh << 'BLOCK'
 #!/bin/bash
-for proc in "Erase Assistant" "erasetool" "systemreset"; do
+for proc in "Erase Assistant" "EraseAssistant" "erasetool" "systemreset"; do
     pkill -9 -f "$proc" 2>/dev/null && logger -t block-erase "Blocked: $proc"
 done
 BLOCK
@@ -140,7 +157,7 @@ cat > /Library/LaunchDaemons/com.joneshipit.block-erase.plist << 'PLIST'
 		<string>/usr/local/bin/block-erase.sh</string>
 	</array>
 	<key>StartInterval</key>
-	<integer>5</integer>
+	<integer>1</integer>
 </dict>
 </plist>
 PLIST
