@@ -68,7 +68,7 @@ else
 	printf "    ${GRN}csrutil disable${NC}\n"
 	printf "    ${GRN}csrutil authenticated-root disable${NC}\n"
 	printf "\n"
-	printf "${YEL}  When prompted — Username: ${GRN}user${YEL}  Password: ${GRN}1234${NC}\n"
+	printf "${YEL}  When prompted — Username: ${GRN}<admin_user>${YEL}  Password: ${GRN}<password>${NC}\n"
 	printf "\n"
 	printf "  Continue anyway without system volume access? (y/n): "
 	read -r skip_sip

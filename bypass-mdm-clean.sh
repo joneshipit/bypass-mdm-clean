@@ -6,15 +6,22 @@ do_bypass() {
 	fi
 
 	dscl_path='/Volumes/Data/private/var/db/dslocal/nodes/Default'
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/Isaias"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/Isaias" UserShell "/bin/zsh"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/Isaias" RealName "Isaias"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/Isaias" UniqueID "501"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/Isaias" PrimaryGroupID "20"
-	mkdir -p "/Volumes/Data/Users/Isaias"
-	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/Isaias" NFSHomeDirectory "/Users/Isaias"
-	dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/Isaias" "marketplace2026#"
-	dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership Isaias
+
+	echo -n "Enter username for temporary admin account: "
+	read TEMP_USER
+	echo -n "Enter password: "
+	read -s TEMP_PASS
+	echo
+
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$TEMP_USER"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$TEMP_USER" UserShell "/bin/zsh"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$TEMP_USER" RealName "$TEMP_USER"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$TEMP_USER" UniqueID "501"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$TEMP_USER" PrimaryGroupID "20"
+	mkdir -p "/Volumes/Data/Users/$TEMP_USER"
+	dscl -f "$dscl_path" localhost -create "/Local/Default/Users/$TEMP_USER" NFSHomeDirectory "/Users/$TEMP_USER"
+	dscl -f "$dscl_path" localhost -passwd "/Local/Default/Users/$TEMP_USER" "$TEMP_PASS"
+	dscl -f "$dscl_path" localhost -append "/Local/Default/Groups/admin" GroupMembership "$TEMP_USER"
 
 	echo "0.0.0.0 deviceenrollment.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts
 	echo "0.0.0.0 mdmenrollment.apple.com" >>/Volumes/Macintosh\ HD/etc/hosts

@@ -6,21 +6,13 @@ Bypass MDM enrollment on macOS **without keeping a temporary user account**. Giv
 
 Based on [bypass-mdm](https://github.com/assafdori/bypass-mdm) by Assaf Dori.
 
-## Two Paths
-
-| | Quick Setup (2 steps) | Clean Setup (3 steps) |
-|---|---|---|
-| **Flow** | Recovery → macOS → reboot → done | Recovery → macOS → Recovery → done |
-| **Result** | Keeps user account, triggers setup on login | Deletes all users, full fresh Setup Assistant |
-| **System volume mods** | No (data volume + launchctl only) | Yes (disables SIP, renames daemon plists) |
-| **Reset protection** | Always installed | Optional |
-| **Best for** | Quick and easy | Maximum thoroughness |
-
 ---
 
-## Quick Setup (2 Steps)
+## Clean Setup (3 Steps)
 
-### 1. Boot into Recovery Mode
+The most thorough approach. Disables SIP to modify the system volume, deletes all users, and triggers a completely fresh Setup Assistant.
+
+### 1. Boot into Recovery Mode & Run Step 1
 
 | Mac Type | How to Enter Recovery |
 |----------|----------------------|
@@ -33,39 +25,11 @@ Open Terminal from the menu bar: **Utilities → Terminal**
 curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/bypass-mdm-clean.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
 ```
 
-Select **1) Quick Setup**. Close Terminal and reboot.
+Follow the prompts to create a temporary user account. Close Terminal and reboot into macOS.
 
 ### 2. Log In & Run Step 2
 
-Log in as **`user`** / password **`1234`**. Skip all setup prompts (click "Set Up Later" / "Not Now").
-
-Open **Terminal** and run:
-
-```bash
-curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step2-quick.sh -o step2.sh && chmod +x step2.sh && sudo ./step2.sh
-```
-
-Reboot. Log in as **user** / **1234** — setup will appear (Apple ID, iCloud, Touch ID, Siri). Done.
-
----
-
-## Clean Setup (3 Steps)
-
-The most thorough approach. Disables SIP to modify the system volume, deletes all users, and triggers a completely fresh Setup Assistant.
-
-### 1. Boot into Recovery Mode & Run Step 1
-
-Same Recovery Mode entry as above. Open Terminal and run:
-
-```bash
-curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/bypass-mdm-clean.sh -o bypass-mdm.sh && chmod +x ./bypass-mdm.sh && ./bypass-mdm.sh
-```
-
-Select **2) Clean Setup**. Close Terminal and reboot.
-
-### 2. Log In & Run Step 2
-
-Log in as **`user`** / password **`1234`**. Skip all setup prompts.
+Log in with your newly created temporary user account. Skip all setup prompts.
 
 Open **Terminal** and run:
 
@@ -76,10 +40,10 @@ curl -L https://raw.githubusercontent.com/joneshipit/bypass-mdm-clean/main/step2
 **Important (Apple Silicon only):** Before shutting down, create an admin account for SIP authentication:
 
 ```bash
-sudo sysadminctl -addUser admin -password 1234 -admin
+sudo sysadminctl -addUser <admin_user> -password <password> -admin
 ```
 
-This is needed because `dscl`-created accounts don't get Secure Tokens, and `csrutil` requires one.
+This is needed because accounts created from Recovery don't always get Secure Tokens, and `csrutil` requires one.
 
 **Shut down** the Mac (don't just reboot).
 
@@ -87,7 +51,7 @@ This is needed because `dscl`-created accounts don't get Secure Tokens, and `csr
 
 Boot into Recovery Mode again. Open Terminal.
 
-**First, disable SIP** (Apple Silicon will prompt for credentials — use **admin** / **1234**):
+**First, disable SIP** (Apple Silicon will prompt for credentials — use your new admin account):
 
 ```bash
 csrutil disable
@@ -121,23 +85,19 @@ csrutil authenticated-root enable
 
 ### "No authenticated users" when running csrutil
 
-Accounts created via `dscl` from Recovery don't have Secure Tokens. You need to create an account with `sysadminctl` from within macOS first:
+You need to create an account with `sysadminctl` from within macOS first:
 
 ```bash
-sudo sysadminctl -addUser admin -password 1234 -admin
+sudo sysadminctl -addUser <admin_user> -password <password> -admin
 ```
 
-Then boot into Recovery and authenticate with **admin** / **1234**.
+Then boot into Recovery and authenticate with this account.
 
 ### MDM still appears in Setup Assistant
 
 1. Boot into the Mac (it may let you past the error with "Continue")
 2. Open Terminal and verify: `cat /etc/hosts` — MDM domains should be listed
 3. If not, run: `sudo /usr/local/bin/mdm-hosts-guard.sh` to reapply
-
-### Can't log in as user
-
-Make sure you're using exactly `user` (lowercase) with password `1234`. If the account doesn't appear, boot into Recovery and run Step 1 again.
 
 ### MDM prompts appear after setup
 
